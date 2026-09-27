@@ -93,6 +93,14 @@ function isUnimportableList(listId) {
   return (/^RD/.test(listId) && !/^RDCLAK/.test(listId)) || /^(LL|WL|LM)$/.test(listId);
 }
 
+/** 全角→半角・空白除去（iPhoneの自動変換やコピー時の空白対策） */
+function normPw(v) {
+  return String(v || '').normalize('NFKC').replace(/\s+/g, '');
+}
+function normEmail(v) {
+  return String(v || '').normalize('NFKC').trim();
+}
+
 function shuffleArr(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -261,8 +269,8 @@ function bindAuth() {
     e.preventDefault();
     withBusy(e.submitter, async () => {
       const r = await api('login', {
-        email: $('#loginEmail').value,
-        password: $('#loginPassword').value,
+        email: normEmail($('#loginEmail').value),
+        password: normPw($('#loginPassword').value),
       });
       saveSession(r.token, r.expiresAt);
       state.user = r.user;
@@ -279,7 +287,7 @@ function bindAuth() {
   $('#formRegister').addEventListener('submit', e => {
     e.preventDefault();
     withBusy(e.submitter, async () => {
-      const email = $('#regEmail').value;
+      const email = normEmail($('#regEmail').value);
       const r = await api('register', { email, nickname: $('#regNickname').value });
       $('#loginEmail').value = email;
       showAuth('login');
@@ -290,7 +298,7 @@ function bindAuth() {
   $('#formForgot').addEventListener('submit', e => {
     e.preventDefault();
     withBusy(e.submitter, async () => {
-      const email = $('#forgotEmail').value;
+      const email = normEmail($('#forgotEmail').value);
       const r = await api('forgot_password', { email });
       $('#resetEmail').value = email;
       showAuth('reset');
@@ -301,11 +309,11 @@ function bindAuth() {
   $('#formReset').addEventListener('submit', e => {
     e.preventDefault();
     withBusy(e.submitter, async () => {
-      const email = $('#resetEmail').value;
+      const email = normEmail($('#resetEmail').value);
       const r = await api('reset_password', {
         email,
-        code: $('#resetCode').value,
-        newPassword: $('#resetPassword').value,
+        code: normPw($('#resetCode').value),
+        newPassword: normPw($('#resetPassword').value),
       });
       $('#resetCode').value = '';
       $('#resetPassword').value = '';
@@ -317,14 +325,14 @@ function bindAuth() {
 
   $('#formSetPw').addEventListener('submit', e => {
     e.preventDefault();
-    const newPw = $('#setpwNew').value;
-    if (newPw !== $('#setpwConfirm').value) {
+    const newPw = normPw($('#setpwNew').value);
+    if (newPw !== normPw($('#setpwConfirm').value)) {
       toast('確認用のパスワードが一致しません', 'error');
       return;
     }
     withBusy(e.submitter, async () => {
       const r = await api('set_password', {
-        currentPassword: $('#setpwCurrent').value,
+        currentPassword: normPw($('#setpwCurrent').value),
         newPassword: newPw,
       });
       ['#setpwCurrent', '#setpwNew', '#setpwConfirm'].forEach(s => { $(s).value = ''; });

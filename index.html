@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
-  <script src="app.js" defer></script>
+  <link rel="stylesheet" href="style.css?v=3">
+  <script src="app.js?v=3" defer></script>
 </head>
 <body>
 
@@ -124,17 +124,18 @@
       <h2>ログイン</h2>
       <div class="field">
         <label for="loginEmail">メールアドレス</label>
-        <input id="loginEmail" class="input" type="email" autocomplete="email" required>
+        <input id="loginEmail" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="email" autocomplete="email" required>
       </div>
       <div class="field">
         <label for="loginPassword">パスワード（仮パスワード）</label>
         <div class="pw-wrap">
-          <input id="loginPassword" class="input" type="password" autocomplete="current-password" required>
+          <input id="loginPassword" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="password" autocomplete="current-password" required>
           <button type="button" class="pw-toggle" data-target="loginPassword" aria-label="パスワードを表示" aria-pressed="false">
             <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
           </button>
         </div>
+        <p class="hint">仮パスワードは、メールからコピーして貼り付けるのが確実です。保存済みのパスワードが自動入力された場合は消してから貼り付けてください。</p>
       </div>
       <button type="submit" class="btn primary block">ログイン</button>
       <div class="auth-links">
@@ -153,7 +154,7 @@
       </div>
       <div class="field">
         <label for="regEmail">メールアドレス</label>
-        <input id="regEmail" class="input" type="email" autocomplete="email" required>
+        <input id="regEmail" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="email" autocomplete="email" required>
       </div>
       <button type="submit" class="btn primary block">仮パスワードを受け取る</button>
       <div class="auth-links">
@@ -167,7 +168,7 @@
       <p class="hint">登録したメールアドレスに、再設定コード（6桁）を送ります。</p>
       <div class="field">
         <label for="forgotEmail">メールアドレス</label>
-        <input id="forgotEmail" class="input" type="email" autocomplete="email" required>
+        <input id="forgotEmail" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="email" autocomplete="email" required>
       </div>
       <button type="submit" class="btn primary block">再設定コードを受け取る</button>
       <div class="auth-links">
@@ -182,16 +183,16 @@
       <p class="hint">メールに届いた6桁のコードと、新しいパスワードを入力してください。</p>
       <div class="field">
         <label for="resetEmail">メールアドレス</label>
-        <input id="resetEmail" class="input" type="email" autocomplete="email" required>
+        <input id="resetEmail" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="email" autocomplete="email" required>
       </div>
       <div class="field">
         <label for="resetCode">再設定コード</label>
-        <input id="resetCode" class="input" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+        <input id="resetCode" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
       </div>
       <div class="field">
         <label for="resetPassword">新しいパスワード</label>
         <div class="pw-wrap">
-          <input id="resetPassword" class="input" type="password" autocomplete="new-password" required>
+          <input id="resetPassword" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="password" autocomplete="new-password" required>
           <button type="button" class="pw-toggle" data-target="resetPassword" aria-label="パスワードを表示" aria-pressed="false">
             <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
@@ -213,7 +214,7 @@
       <div class="field" id="setpwCurrentWrap" hidden>
         <label for="setpwCurrent">現在のパスワード</label>
         <div class="pw-wrap">
-          <input id="setpwCurrent" class="input" type="password" autocomplete="current-password">
+          <input id="setpwCurrent" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="password" autocomplete="current-password">
           <button type="button" class="pw-toggle" data-target="setpwCurrent" aria-label="パスワードを表示" aria-pressed="false">
             <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
@@ -223,7 +224,7 @@
       <div class="field">
         <label for="setpwNew">新しいパスワード</label>
         <div class="pw-wrap">
-          <input id="setpwNew" class="input" type="password" autocomplete="new-password" required>
+          <input id="setpwNew" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="password" autocomplete="new-password" required>
           <button type="button" class="pw-toggle" data-target="setpwNew" aria-label="パスワードを表示" aria-pressed="false">
             <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
@@ -234,7 +235,7 @@
       <div class="field">
         <label for="setpwConfirm">新しいパスワード（確認）</label>
         <div class="pw-wrap">
-          <input id="setpwConfirm" class="input" type="password" autocomplete="new-password" required>
+          <input id="setpwConfirm" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="password" autocomplete="new-password" required>
           <button type="button" class="pw-toggle" data-target="setpwConfirm" aria-label="パスワードを表示" aria-pressed="false">
             <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
