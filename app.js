@@ -80,6 +80,19 @@ function extractVideoId(input) {
   return '';
 }
 
+function extractPlaylistId(input) {
+  const s = String(input || '').trim();
+  const m = s.match(/[?&]list=([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  if (/^(PL|OL|UU|FL|RDCLAK)[A-Za-z0-9_-]{10,}$/.test(s)) return s;
+  return '';
+}
+
+/** 読み込めないリスト（自動生成ミックス・個人用リスト）か */
+function isUnimportableList(listId) {
+  return (/^RD/.test(listId) && !/^RDCLAK/.test(listId)) || /^(LL|WL|LM)$/.test(listId);
+}
+
 function shuffleArr(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -680,6 +693,22 @@ async function addFavorites(items) {
   return r;
 }
 
+async function importPlaylist(url) {
+  const r = await api('import_playlist', { url });
+  state.favorites = r.favorites;
+  renderFavorites();
+  syncQueueFromFavorites();
+  renderAi();
+  renderHistory();
+  const notes = [];
+  if (r.duplicated) notes.push(`登録済み${r.duplicated}曲`);
+  if (r.unavailable) notes.push(`再生できない${r.unavailable}曲`);
+  const tail = notes.length ? `（${notes.join('、')}は除外）` : '';
+  if (r.added.length) toast(`${r.added.length}曲を追加しました${tail}`, 'ok');
+  else toast(`追加できる曲がありませんでした${tail}`, 'error');
+  return r;
+}
+
 function inFavorites(videoId) {
   return state.favorites.some(f => f.videoId === videoId);
 }
@@ -688,12 +717,37 @@ function bindFavorites() {
   $('#formAdd').addEventListener('submit', e => {
     e.preventDefault();
     const input = $('#addUrl');
-    if (!extractVideoId(input.value)) {
-      toast('YouTubeのURL（または11文字の動画ID）を貼り付けてください', 'error');
+    const val = input.value.trim();
+    const vid = extractVideoId(val);
+    const listId = extractPlaylistId(val);
+    const btn = e.submitter;
+
+    // プレイリストURL
+    if (listId && !isUnimportableList(listId)) {
+      const msg = vid
+        ? 'このURLにはプレイリストが含まれています。\n\n「OK」→ プレイリストの曲をまとめて追加\n「キャンセル」→ この1曲だけ追加'
+        : 'このプレイリストの曲を、まとめてお気に入りに追加しますか？（最大200曲）';
+      if (confirm(msg)) {
+        withBusy(btn, async () => {
+          if (btn) btn.textContent = '読み込み中…';
+          toast('プレイリストを読み込んでいます…');
+          const r = await importPlaylist(val);
+          if (r) input.value = '';
+        });
+        return;
+      }
+      if (!vid) return;
+    } else if (listId && !vid) {
+      toast('「ミックス」や「後で見る」などの自動・個人用リストは読み込めません。通常のプレイリストか、動画のURLを貼ってください', 'error');
       return;
     }
-    withBusy(e.submitter, async () => {
-      const r = await addFavorites([{ url: input.value }]);
+
+    if (!vid) {
+      toast('YouTubeの動画またはプレイリストのURLを貼り付けてください', 'error');
+      return;
+    }
+    withBusy(btn, async () => {
+      const r = await addFavorites([{ url: vid }]);
       if (r.added.length) input.value = '';
     });
   });
