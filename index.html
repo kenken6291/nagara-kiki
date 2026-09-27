@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#16182B">
+  <title>ながら聴き</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1 class="brand">ながら聴き</h1>
+  <details class="account" id="accountMenu" hidden>
+    <summary><span id="userName"></span> さん</summary>
+    <div class="account-menu">
+      <button type="button" id="btnChangePw">パスワードを変更</button>
+      <button type="button" id="btnLogout">ログアウト</button>
+    </div>
+  </details>
+</header>
+
+<main id="app" hidden>
+  <!-- プレイヤー -->
+  <section class="deck" aria-label="プレイヤー">
+    <div class="screen">
+      <div id="ytPlayer"></div>
+      <p class="screen-empty" id="screenEmpty">お気に入りから曲を選ぶと、ここで再生が始まります</p>
+    </div>
+
+    <div class="now">
+      <p class="now-title" id="nowTitle">再生していません</p>
+      <p class="now-sub" id="nowSub"></p>
+    </div>
+
+    <div class="dial">
+      <div class="dial-scale" aria-hidden="true"></div>
+      <div class="dial-fill" id="dialFill" aria-hidden="true"></div>
+      <div class="dial-needle" id="needle" aria-hidden="true"></div>
+      <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="再生位置">
+    </div>
+    <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+
+    <div class="controls">
+      <button type="button" class="ctrl" id="btnShuffle" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h3.5c2 0 3.3.9 4.5 2.6l2 2.8c1.2 1.7 2.5 2.6 4.5 2.6H21"/><path d="M3 17h3.5c2 0 3.3-.9 4.5-2.6"/><path d="M13 9.6C14.2 7.9 15.5 7 17.5 7H21"/><path d="m18 4 3 3-3 3"/><path d="m18 12 3 3-3 3"/></svg>
+        <span>シャッフル</span>
+      </button>
+      <button type="button" class="ctrl" id="btnPrev">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14"/><path class="f" d="M19 5 9 12l10 7z"/></svg>
+        <span>前へ</span>
+      </button>
+      <button type="button" class="ctrl ctrl-play" id="btnPlay" data-playing="false">
+        <span class="disc">
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path class="f" d="M8 4.5v15l12-7.5z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect class="f" x="6" y="4.5" width="4" height="15" rx="1"/><rect class="f" x="14" y="4.5" width="4" height="15" rx="1"/></svg>
+        </span>
+        <span id="playLabel">再生</span>
+      </button>
+      <button type="button" class="ctrl" id="btnNext">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14"/><path class="f" d="M5 5l10 7-10 7z"/></svg>
+        <span>次へ</span>
+      </button>
+      <button type="button" class="ctrl" id="btnRepeat" aria-pressed="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="m17 3 3 3-3 3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/><path d="m7 21-3-3 3-3"/></svg>
+        <span id="repeatLabel">全曲リピート</span>
+      </button>
+    </div>
+    <p class="queue-info" id="queueInfo"></p>
+  </section>
+
+  <!-- タブ -->
+  <nav class="tabs" role="tablist" aria-label="表示の切り替え">
+    <button type="button" class="tab" role="tab" id="tab-fav" aria-controls="panel-fav" aria-selected="true">お気に入り <span id="favCount" class="count"></span></button>
+    <button type="button" class="tab" role="tab" id="tab-ai" aria-controls="panel-ai" aria-selected="false">AI選曲</button>
+    <button type="button" class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false">履歴</button>
+  </nav>
+
+  <!-- お気に入り -->
+  <section class="panel" id="panel-fav" role="tabpanel" aria-labelledby="tab-fav">
+    <form id="formAdd" class="row" autocomplete="off">
+      <label for="addUrl" class="sr-only">YouTubeのURLまたは動画ID</label>
+      <input id="addUrl" class="input" type="text" inputmode="url" placeholder="YouTubeのURLを貼り付け" required>
+      <button type="submit" class="btn primary">追加</button>
+    </form>
+    <div class="list-head">
+      <button type="button" class="btn small" id="btnPlayFav">最初から再生</button>
+      <button type="button" class="btn small" id="btnShufflePlayFav">シャッフル再生</button>
+    </div>
+    <ul class="list" id="favList"></ul>
+  </section>
+
+  <!-- AI選曲 -->
+  <section class="panel" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden>
+    <form id="formAi">
+      <label for="aiPrompt" class="lead">いまの気分や、聴きたい雰囲気を書いてください</label>
+      <textarea id="aiPrompt" class="input" rows="3" maxlength="300" placeholder="例：雨の日の午後にゆっくり聴けるボサノバ" required></textarea>
+      <div class="chips" id="aiChips"></div>
+      <button type="submit" class="btn primary block" id="btnAi">曲を選んでもらう</button>
+    </form>
+    <div id="aiResult" aria-live="polite"></div>
+  </section>
+
+  <!-- 履歴 -->
+  <section class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+    <ul class="list" id="historyList"></ul>
+  </section>
+</main>
+
+<!-- 認証 -->
+<div class="auth" id="authModal" hidden>
+  <div class="auth-card">
+    <div class="auth-intro" id="authIntro">
+      <p class="auth-brand">ながら聴き</p>
+      <p class="auth-lead">YouTubeの曲をお気に入りに集めて、流しっぱなしで聴けます。</p>
+    </div>
+
+    <!-- ログイン -->
+    <form class="auth-panel" data-panel="login" id="formLogin">
+      <h2>ログイン</h2>
+      <div class="field">
+        <label for="loginEmail">メールアドレス</label>
+        <input id="loginEmail" class="input" type="email" autocomplete="email" required>
+      </div>
+      <div class="field">
+        <label for="loginPassword">パスワード（仮パスワード）</label>
+        <div class="pw-wrap">
+          <input id="loginPassword" class="input" type="password" autocomplete="current-password" required>
+          <button type="button" class="pw-toggle" data-target="loginPassword" aria-label="パスワードを表示" aria-pressed="false">
+            <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+      </div>
+      <button type="submit" class="btn primary block">ログイン</button>
+      <div class="auth-links">
+        <button type="button" class="link" data-go="register">はじめての方（新規登録）</button>
+        <button type="button" class="link" data-go="forgot">パスワードを忘れた方</button>
+      </div>
+    </form>
+
+    <!-- 新規登録 -->
+    <form class="auth-panel" data-panel="register" id="formRegister" hidden>
+      <h2>新規登録</h2>
+      <p class="hint">入力したメールアドレスに仮パスワードを送ります。</p>
+      <div class="field">
+        <label for="regNickname">ニックネーム</label>
+        <input id="regNickname" class="input" type="text" maxlength="20" autocomplete="nickname" required>
+      </div>
+      <div class="field">
+        <label for="regEmail">メールアドレス</label>
+        <input id="regEmail" class="input" type="email" autocomplete="email" required>
+      </div>
+      <button type="submit" class="btn primary block">仮パスワードを受け取る</button>
+      <div class="auth-links">
+        <button type="button" class="link" data-go="login">ログイン画面に戻る</button>
+      </div>
+    </form>
+
+    <!-- パスワード忘れ -->
+    <form class="auth-panel" data-panel="forgot" id="formForgot" hidden>
+      <h2>パスワードの再設定</h2>
+      <p class="hint">登録したメールアドレスに、再設定コード（6桁）を送ります。</p>
+      <div class="field">
+        <label for="forgotEmail">メールアドレス</label>
+        <input id="forgotEmail" class="input" type="email" autocomplete="email" required>
+      </div>
+      <button type="submit" class="btn primary block">再設定コードを受け取る</button>
+      <div class="auth-links">
+        <button type="button" class="link" data-go="reset">コードを受け取った方</button>
+        <button type="button" class="link" data-go="login">ログイン画面に戻る</button>
+      </div>
+    </form>
+
+    <!-- 再設定コード入力 -->
+    <form class="auth-panel" data-panel="reset" id="formReset" hidden>
+      <h2>新しいパスワードを設定</h2>
+      <p class="hint">メールに届いた6桁のコードと、新しいパスワードを入力してください。</p>
+      <div class="field">
+        <label for="resetEmail">メールアドレス</label>
+        <input id="resetEmail" class="input" type="email" autocomplete="email" required>
+      </div>
+      <div class="field">
+        <label for="resetCode">再設定コード</label>
+        <input id="resetCode" class="input" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+      </div>
+      <div class="field">
+        <label for="resetPassword">新しいパスワード</label>
+        <div class="pw-wrap">
+          <input id="resetPassword" class="input" type="password" autocomplete="new-password" required>
+          <button type="button" class="pw-toggle" data-target="resetPassword" aria-label="パスワードを表示" aria-pressed="false">
+            <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+        <p class="hint">8文字以上、英字と数字を両方含めてください</p>
+      </div>
+      <button type="submit" class="btn primary block">パスワードを再設定</button>
+      <div class="auth-links">
+        <button type="button" class="link" data-go="forgot">コードをもう一度送る</button>
+        <button type="button" class="link" data-go="login">ログイン画面に戻る</button>
+      </div>
+    </form>
+
+    <!-- パスワード設定／変更 -->
+    <form class="auth-panel" data-panel="setpw" id="formSetPw" hidden>
+      <h2 id="setpwTitle">新しいパスワードを設定</h2>
+      <p class="hint" id="setpwLead"></p>
+      <div class="field" id="setpwCurrentWrap" hidden>
+        <label for="setpwCurrent">現在のパスワード</label>
+        <div class="pw-wrap">
+          <input id="setpwCurrent" class="input" type="password" autocomplete="current-password">
+          <button type="button" class="pw-toggle" data-target="setpwCurrent" aria-label="パスワードを表示" aria-pressed="false">
+            <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="setpwNew">新しいパスワード</label>
+        <div class="pw-wrap">
+          <input id="setpwNew" class="input" type="password" autocomplete="new-password" required>
+          <button type="button" class="pw-toggle" data-target="setpwNew" aria-label="パスワードを表示" aria-pressed="false">
+            <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+        <p class="hint">8文字以上、英字と数字を両方含めてください</p>
+      </div>
+      <div class="field">
+        <label for="setpwConfirm">新しいパスワード（確認）</label>
+        <div class="pw-wrap">
+          <input id="setpwConfirm" class="input" type="password" autocomplete="new-password" required>
+          <button type="button" class="pw-toggle" data-target="setpwConfirm" aria-label="パスワードを表示" aria-pressed="false">
+            <svg class="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+      </div>
+      <button type="submit" class="btn primary block">パスワードを保存</button>
+      <div class="auth-links">
+        <button type="button" class="link" id="setpwCancel" hidden>キャンセル</button>
+        <button type="button" class="link" id="setpwLogout">ログアウト</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+</body>
+</html>
