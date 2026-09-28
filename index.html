@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=3">
-  <script src="app.js?v=3" defer></script>
+  <link rel="stylesheet" href="style.css?v=4">
+  <script src="app.js?v=4" defer></script>
 </head>
 <body>
 
@@ -33,8 +33,11 @@
     </div>
 
     <div class="now">
-      <p class="now-title" id="nowTitle">再生していません</p>
-      <p class="now-sub" id="nowSub"></p>
+      <div class="now-text">
+        <p class="now-title" id="nowTitle">再生していません</p>
+        <p class="now-sub" id="nowSub"></p>
+      </div>
+      <button type="button" class="btn small now-add" id="btnNowToPl" hidden>＋ リストへ</button>
     </div>
 
     <div class="dial">
@@ -76,6 +79,7 @@
   <!-- タブ -->
   <nav class="tabs" role="tablist" aria-label="表示の切り替え">
     <button type="button" class="tab" role="tab" id="tab-fav" aria-controls="panel-fav" aria-selected="true">お気に入り <span id="favCount" class="count"></span></button>
+    <button type="button" class="tab" role="tab" id="tab-pl" aria-controls="panel-pl" aria-selected="false">プレイリスト <span id="plTabCount" class="count"></span></button>
     <button type="button" class="tab" role="tab" id="tab-ai" aria-controls="panel-ai" aria-selected="false">AI選曲</button>
     <button type="button" class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false">履歴</button>
   </nav>
@@ -92,6 +96,42 @@
       <button type="button" class="btn small" id="btnShufflePlayFav">シャッフル再生</button>
     </div>
     <ul class="list" id="favList"></ul>
+  </section>
+
+  <!-- プレイリスト -->
+  <section class="panel" id="panel-pl" role="tabpanel" aria-labelledby="tab-pl" hidden>
+    <!-- 一覧 -->
+    <div id="plIndex">
+      <div class="pl-top">
+        <p class="pl-limit" id="plLimit"></p>
+        <button type="button" class="btn primary small" id="btnPlNew">＋ 新しいプレイリスト</button>
+      </div>
+      <ul class="pl-grid" id="plGrid"></ul>
+    </div>
+
+    <!-- 中身 -->
+    <div id="plDetail" hidden>
+      <button type="button" class="link" id="btnPlBack">← プレイリスト一覧へ</button>
+      <div class="pl-title-row">
+        <h3 class="pl-name" id="plName"></h3>
+        <span class="count" id="plCount"></span>
+      </div>
+      <form id="formPlAdd" class="row" autocomplete="off">
+        <label for="plAddUrl" class="sr-only">YouTubeの動画またはプレイリストのURL</label>
+        <input id="plAddUrl" class="input" type="text" inputmode="url" placeholder="YouTubeの動画・プレイリストのURLを貼り付け" required>
+        <button type="submit" class="btn primary">追加</button>
+      </form>
+      <div class="list-head wrap">
+        <button type="button" class="btn small" id="btnPlPlay">最初から再生</button>
+        <button type="button" class="btn small" id="btnPlShuffle">シャッフル再生</button>
+        <button type="button" class="btn small" id="btnPlFromFav">お気に入りから追加</button>
+      </div>
+      <ul class="list" id="plItems"></ul>
+      <div class="pl-manage">
+        <button type="button" class="btn small" id="btnPlRename">名前を変更</button>
+        <button type="button" class="btn small danger" id="btnPlDelete">このプレイリストを削除</button>
+      </div>
+    </div>
   </section>
 
   <!-- AI選曲 -->
@@ -250,6 +290,38 @@
     </form>
   </div>
 </div>
+
+<!-- プレイリストを選ぶ -->
+<dialog class="sheet" id="dlgPick" aria-labelledby="pickTitle">
+  <div class="sheet-card">
+    <h2 class="sheet-title" id="pickTitle">プレイリストに追加</h2>
+    <p class="hint" id="pickLead"></p>
+    <div class="sheet-body">
+      <ul class="pick-list" id="pickList"></ul>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn" data-close>閉じる</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- お気に入りから選ぶ -->
+<dialog class="sheet" id="dlgFav" aria-labelledby="favPickTitle">
+  <form class="sheet-card" id="formFavPick">
+    <h2 class="sheet-title" id="favPickTitle">お気に入りから追加</h2>
+    <div class="pick-bar">
+      <button type="button" class="link" id="favPickAll">すべて選ぶ</button>
+      <span class="count" id="favPickCount"></span>
+    </div>
+    <div class="sheet-body">
+      <ul class="check-list" id="favPickList"></ul>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn" data-close>閉じる</button>
+      <button type="submit" class="btn primary" id="favPickOk">追加する</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

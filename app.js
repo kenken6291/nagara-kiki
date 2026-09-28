@@ -25,11 +25,18 @@ const state = {
   user: null,
   favorites: [],
   history: [],
+  playlists: [],   // [{id, name, items:[{id, videoId, title, channel}]}]
+  plMax: 10,
+  plMaxItems: 200,
+  plOpen: null,    // 開いているプレイリストのID
+  plLoaded: false,
+  pickItems: [],   // 「プレイリストに追加」で追加しようとしている曲
+  pickSuggest: '',
   ai: null,
   queue: [],      // [{videoId, title, channel}]
   order: [],      // 再生順（queue のインデックス）
   pos: -1,        // order 内の現在位置
-  source: '',     // 'favorites' | 'ai' | 'history'
+  source: '',     // 'favorites' | 'ai' | 'history' | 'pl:<ID>'
   sourceLabel: '',
   shuffle: false,
   repeat: 'all',  // 'off' | 'all' | 'one'
@@ -40,6 +47,7 @@ const state = {
   seeking: false,
   errorStreak: 0,
   reorderTimer: null,
+  plReorderTimer: null,
 };
 
 /* =========================================================
@@ -239,10 +247,10 @@ async function enterApp() {
   $('#app').hidden = false;
   $('#accountMenu').hidden = false;
   $('#userName').textContent = state.user.nickname || state.user.email;
-  try {
-    await refreshFavorites();
-  } catch (e) {
-    if (e.code !== 'AUTH') toast(e.message, 'error');
+  const results = await Promise.allSettled([refreshFavorites(), refreshPlaylists()]);
+  const failed = results.find(r => r.status === 'rejected');
+  if (failed && failed.reason.code !== 'AUTH' && failed.reason.code !== 'MUST_CHANGE_PASSWORD') {
+    toast(failed.reason.message, 'error');
   }
 }
 
@@ -357,8 +365,13 @@ async function logout() {
   try { await api('logout'); } catch (e) { /* 失敗してもローカルは消す */ }
   clearSession();
   if (state.playerReady) state.player.stopVideo();
-  Object.assign(state, { favorites: [], history: [], ai: null, queue: [], order: [], pos: -1, source: '' });
+  Object.assign(state, {
+    favorites: [], history: [], ai: null, queue: [], order: [], pos: -1, source: '',
+    playlists: [], plOpen: null, plLoaded: false, pickItems: [],
+  });
   $('#aiResult').innerHTML = '';
+  closeDialogs();
+  renderPlaylists();
   updateNowPlaying();
   $('#app').hidden = true;
   showAuth('login');
@@ -456,6 +469,7 @@ function playCurrent() {
   state.lastLogged = null;
   updateNowPlaying();
   renderFavorites();
+  renderPlaylists();
   renderAi();
   renderHistory();
   if (state.playerReady) state.player.loadVideoById(item.videoId);
@@ -494,7 +508,9 @@ function prev() {
 
 function togglePlay() {
   if (!state.queue.length || !currentItem()) {
-    if (state.favorites.length) playList(state.favorites, 0, 'favorites', 'お気に入り');
+    const pl = state.playlists.find(p => p.id === state.plOpen && p.items.length);
+    if (pl && !$('#panel-pl').hidden) playPlaylist(pl, 0);
+    else if (state.favorites.length) playList(state.favorites, 0, 'favorites', 'お気に入り');
     else toast('まずお気に入りに曲を追加してください');
     return;
   }
@@ -528,11 +544,11 @@ function updateModeButtons() {
   $('#repeatLabel').textContent = { off: 'リピートなし', all: '全曲リピート', one: '1曲リピート' }[state.repeat];
 }
 
-/** お気に入りの変更を、再生中のキューへ反映 */
-function syncQueueFromFavorites() {
-  if (state.source !== 'favorites' || !state.queue.length) return;
+/** リストの変更を、再生中のキューへ反映 */
+function syncQueue(source, list) {
+  if (state.source !== source || !state.queue.length) return;
   const cur = currentItem();
-  state.queue = state.favorites.map(f => ({ videoId: f.videoId, title: f.title, channel: f.channel }));
+  state.queue = list.map(f => ({ videoId: f.videoId, title: f.title, channel: f.channel || '' }));
   if (!state.queue.length) { state.order = []; state.pos = -1; updateNowPlaying(); return; }
   const idx = cur ? state.queue.findIndex(q => q.videoId === cur.videoId) : -1;
   if (idx >= 0) {
@@ -545,6 +561,24 @@ function syncQueueFromFavorites() {
   updateNowPlaying();
 }
 
+function syncQueueFromFavorites() {
+  syncQueue('favorites', state.favorites);
+}
+
+function syncQueueFromPlaylists() {
+  if (!state.source.startsWith('pl:')) return;
+  const pl = findPlaylist(state.source.slice(3));
+  if (!pl) {
+    // 再生中のプレイリストが削除された：今の曲はそのまま、以後はキューなし扱い
+    state.source = '';
+    state.sourceLabel = '（削除されたプレイリスト）';
+    updateNowPlaying();
+    return;
+  }
+  state.sourceLabel = `プレイリスト「${pl.name}」`;
+  syncQueue(state.source, pl.items);
+}
+
 function updateNowPlaying() {
   const item = currentItem();
   if (item) {
@@ -552,7 +586,9 @@ function updateNowPlaying() {
     $('#nowSub').textContent = item.channel;
     $('#queueInfo').textContent = `${state.sourceLabel}　${state.pos + 1} / ${state.order.length}曲目`;
     document.title = `${item.title} | ながら聴き`;
+    $('#btnNowToPl').hidden = false;
   } else if (!state.queue.length) {
+    $('#btnNowToPl').hidden = true;
     $('#nowTitle').textContent = '再生していません';
     $('#nowSub').textContent = '';
     $('#queueInfo').textContent = '';
@@ -645,9 +681,10 @@ function renderFavorites() {
           <span class="track-sub">${esc(f.channel)}</span>
         </span>
       </button>
-      <div class="track-tools">
+      <div class="track-tools grid2">
         <button type="button" class="icon-btn" data-act="up" aria-label="上へ移動" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="icon-btn" data-act="down" aria-label="下へ移動" ${i === n - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="icon-btn" data-act="to-pl" aria-label="プレイリストに追加">＋</button>
         <button type="button" class="icon-btn danger" data-act="delete" aria-label="削除">削除</button>
       </div>
     </li>`).join('');
@@ -769,6 +806,7 @@ function bindFavorites() {
     else if (act === 'up') moveFavorite(i, -1);
     else if (act === 'down') moveFavorite(i, 1);
     else if (act === 'delete') deleteFavorite(i);
+    else if (act === 'to-pl') openPicker([state.favorites[i]]);
   });
 
   $('#btnPlayFav').addEventListener('click', () => {
@@ -813,6 +851,7 @@ function renderAi() {
           <button type="button" class="btn" data-act="ai-addall" ${notAdded.length ? '' : 'disabled'}>
             ${notAdded.length ? `まとめてお気に入りに追加（${notAdded.length}曲）` : 'すべて追加済み'}
           </button>
+          <button type="button" class="btn" data-act="ai-allpl">まとめてプレイリストへ</button>
         </div>` : ''}
       ${!searchEnabled ? '<p class="note">動画の自動検索が未設定です。「YouTubeで探す」から動画を開き、URLを「お気に入り」の欄に貼り付けてください。</p>' : ''}
     </div>
@@ -833,7 +872,8 @@ function renderAi() {
           </${has ? 'button' : 'div'}>
           <div class="track-tools">
             ${has
-              ? `<button type="button" class="icon-btn" data-act="ai-add" ${added ? 'disabled' : ''}>${added ? '追加済み' : '追加'}</button>`
+              ? `<button type="button" class="icon-btn" data-act="ai-add" ${added ? 'disabled' : ''}>${added ? '追加済み' : '追加'}</button>
+                 <button type="button" class="icon-btn" data-act="ai-topl" aria-label="プレイリストに追加">＋</button>`
               : `<a class="icon-btn btn small" href="${searchUrl}" target="_blank" rel="noopener">YouTubeで探す</a>`}
           </div>
         </li>`;
@@ -881,14 +921,498 @@ function bindAi() {
     } else if (act === 'ai-addall') {
       const items = playable.filter(it => !inFavorites(it.videoId)).map(aiAsTrack);
       withBusy(btn, () => addFavorites(items));
+    } else if (act === 'ai-allpl') {
+      openPicker(playable.map(aiAsTrack), state.ai.playlistTitle);
     } else {
       const it = state.ai.items[Number(btn.closest('.track').dataset.i)];
       if (act === 'ai-play') {
         playList(playable.map(aiAsTrack), playable.indexOf(it), 'ai', label);
       } else if (act === 'ai-add') {
         withBusy(btn, () => addFavorites([aiAsTrack(it)]));
+      } else if (act === 'ai-topl') {
+        openPicker([aiAsTrack(it)]);
       }
     }
+  });
+}
+
+/* =========================================================
+ * プレイリスト（1人10個まで）
+ * ========================================================= */
+const PLAY_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4.5v15l12-7.5z"/></svg>';
+
+function findPlaylist(id) {
+  return state.playlists.find(p => p.id === id) || null;
+}
+
+function applyPlaylists(r) {
+  state.playlists = r.playlists || [];
+  if (r.max) state.plMax = r.max;
+  if (r.maxItems) state.plMaxItems = r.maxItems;
+  state.plLoaded = true;
+  if (state.plOpen && !findPlaylist(state.plOpen)) state.plOpen = null;
+  renderPlaylists();
+  syncQueueFromPlaylists();
+}
+
+async function refreshPlaylists() {
+  const r = await api('pl_list');
+  applyPlaylists(r);
+}
+
+function playPlaylist(pl, startIndex) {
+  if (!pl || !pl.items.length) {
+    toast('このプレイリストにはまだ曲がありません');
+    return;
+  }
+  playList(pl.items, startIndex, 'pl:' + pl.id, `プレイリスト「${pl.name}」`);
+}
+
+function coverHtml(pl) {
+  const ids = pl.items.slice(0, 4).map(it => it.videoId);
+  if (!ids.length) return '<span class="pl-cover"><span class="blank">まだ曲がありません</span></span>';
+  if (ids.length < 4) return `<span class="pl-cover one"><img src="${thumb(ids[0])}" alt="" loading="lazy"></span>`;
+  return `<span class="pl-cover">${ids.map(id => `<img src="${thumb(id)}" alt="" loading="lazy">`).join('')}</span>`;
+}
+
+function renderPlaylists() {
+  const n = state.playlists.length;
+  $('#plTabCount').textContent = n ? `${n}` : '';
+  const open = state.plOpen ? findPlaylist(state.plOpen) : null;
+  $('#plIndex').hidden = !!open;
+  $('#plDetail').hidden = !open;
+
+  // 一覧
+  const rest = state.plMax - n;
+  $('#plLimit').textContent = `${n} / ${state.plMax} 個`;
+  $('#btnPlNew').disabled = rest <= 0;
+  const cards = state.playlists.map(pl => `
+    <li class="pl-card ${state.source === 'pl:' + pl.id ? 'is-playing' : ''}" data-id="${esc(pl.id)}">
+      <button type="button" class="pl-open" data-act="pl-open" aria-label="${esc(pl.name)} を開く">
+        ${coverHtml(pl)}
+        <span class="pl-meta">
+          <span class="pl-meta-name">${esc(pl.name)}</span>
+          <span class="pl-meta-sub">${pl.items.length}曲${state.source === 'pl:' + pl.id ? '・再生中' : ''}</span>
+        </span>
+      </button>
+      ${pl.items.length ? `<button type="button" class="pl-play" data-act="pl-play" aria-label="${esc(pl.name)} を再生">${PLAY_ICON}</button>` : ''}
+    </li>`).join('');
+  const slot = rest > 0
+    ? `<li class="pl-slot">${n ? `あと${rest}個つくれます` : '「＋ 新しいプレイリスト」から<br>最大' + state.plMax + '個までつくれます'}</li>`
+    : '';
+  $('#plGrid').innerHTML = !state.plLoaded ? '<li class="empty">読み込んでいます…</li>' : cards + slot;
+
+  // 中身
+  if (!open) return;
+  $('#plName').textContent = open.name;
+  $('#plCount').textContent = `${open.items.length} / ${state.plMaxItems}曲`;
+  $('#btnPlPlay').disabled = !open.items.length;
+  $('#btnPlShuffle').disabled = !open.items.length;
+  const ul = $('#plItems');
+  const m = open.items.length;
+  if (!m) {
+    ul.innerHTML = '<li class="empty">まだ曲がありません。上の欄にURLを貼るか、「お気に入りから追加」を押してください。お気に入り・AI選曲・履歴の「＋」ボタンからも追加できます。</li>';
+    return;
+  }
+  ul.innerHTML = open.items.map((it, i) => `
+    <li class="track ${isCurrent(it.videoId) && state.source === 'pl:' + open.id ? 'is-current' : ''}" data-i="${i}">
+      <button type="button" class="track-main" data-act="pi-play" aria-label="${esc(it.title)} を再生">
+        <img class="thumb" src="${thumb(it.videoId)}" alt="" loading="lazy">
+        <span class="track-text">
+          <span class="track-title">${esc(it.title)}</span>
+          <span class="track-sub">${esc(it.channel)}</span>
+        </span>
+      </button>
+      <div class="track-tools grid2">
+        <button type="button" class="icon-btn" data-act="pi-up" aria-label="上へ移動" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="icon-btn" data-act="pi-down" aria-label="下へ移動" ${i === m - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="icon-btn" data-act="pi-topl" aria-label="ほかのプレイリストにも追加">＋</button>
+        <button type="button" class="icon-btn danger" data-act="pi-remove" aria-label="このプレイリストから外す">外す</button>
+      </div>
+    </li>`).join('');
+}
+
+function openPlaylist(id) {
+  state.plOpen = id;
+  renderPlaylists();
+  window.scrollTo({ top: $('.tabs').offsetTop - 8, behavior: 'smooth' });
+}
+
+function askName(defaultName) {
+  const v = prompt(`プレイリストの名前（${30}文字まで）`, defaultName || '');
+  if (v === null) return null;
+  const name = v.replace(/\s+/g, ' ').trim();
+  if (!name) { toast('名前を入力してください', 'error'); return null; }
+  if (name.length > 30) { toast('名前は30文字以内にしてください', 'error'); return null; }
+  return name;
+}
+
+function nextDefaultName() {
+  for (let i = 1; i <= 99; i++) {
+    const n = `プレイリスト${i}`;
+    if (!state.playlists.some(p => p.name === n)) return n;
+  }
+  return '';
+}
+
+function toastAddResult(r, plName) {
+  const added = (r.added || []).length;
+  const skipped = r.skipped || [];
+  if (added && !skipped.length) {
+    toast(added === 1 ? `「${plName}」に「${r.added[0].title}」を追加しました` : `「${plName}」に${added}曲を追加しました`, 'ok');
+  } else if (added) {
+    toast(`「${plName}」に${added}曲を追加しました（${skipped.length}件は追加できませんでした）`, 'ok');
+  } else if (skipped.length) {
+    toast(skipped.length === 1 ? skipped[0].reason : `追加できませんでした（${skipped[0].reason}）`, 'error');
+  }
+}
+
+async function createPlaylist(name, items) {
+  const r = await api('pl_create', { name, items: items || [] });
+  applyPlaylists(r);
+  if (items && items.length) toastAddResult(r, name);
+  else toast(`「${name}」を作りました`, 'ok');
+  return r;
+}
+
+async function addToPlaylist(pl, items) {
+  const r = await api('pl_add', { id: pl.id, items });
+  applyPlaylists(r);
+  toastAddResult(r, pl.name);
+  return r;
+}
+
+function movePlItem(pl, i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= pl.items.length) return;
+  [pl.items[i], pl.items[j]] = [pl.items[j], pl.items[i]];
+  renderPlaylists();
+  syncQueueFromPlaylists();
+  const btn = $(`#plItems .track[data-i="${j}"] [data-act="${dir < 0 ? 'pi-up' : 'pi-down'}"]`);
+  if (btn && !btn.disabled) btn.focus();
+
+  clearTimeout(state.plReorderTimer);
+  const id = pl.id;
+  state.plReorderTimer = setTimeout(() => {
+    const cur = findPlaylist(id);
+    if (!cur) return;
+    api('pl_reorder', { id, itemIds: cur.items.map(x => x.id) })
+      .catch(e => toast('並び順を保存できませんでした：' + e.message, 'error'));
+  }, 900);
+}
+
+async function removePlItem(pl, i) {
+  const it = pl.items[i];
+  if (!it || !confirm(`「${it.title}」を「${pl.name}」から外しますか？\n（お気に入りには影響しません）`)) return;
+  try {
+    applyPlaylists(await api('pl_remove', { id: pl.id, itemId: it.id }));
+    toast('外しました');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function bindPlaylists() {
+  $('#btnPlNew').addEventListener('click', e => {
+    if (state.playlists.length >= state.plMax) {
+      toast(`プレイリストは${state.plMax}個までです`, 'error');
+      return;
+    }
+    const name = askName(nextDefaultName());
+    if (!name) return;
+    withBusy(e.currentTarget, async () => {
+      const r = await createPlaylist(name);
+      openPlaylist(r.createdId);
+    });
+  });
+
+  $('#plGrid').addEventListener('click', e => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const pl = findPlaylist(btn.closest('.pl-card').dataset.id);
+    if (!pl) return;
+    if (btn.dataset.act === 'pl-open') openPlaylist(pl.id);
+    else if (btn.dataset.act === 'pl-play') {
+      playPlaylist(pl, state.shuffle ? Math.floor(Math.random() * pl.items.length) : 0);
+    }
+  });
+
+  $('#btnPlBack').addEventListener('click', () => {
+    state.plOpen = null;
+    renderPlaylists();
+  });
+
+  $('#btnPlPlay').addEventListener('click', () => {
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    if (state.shuffle) toggleShuffle();
+    playPlaylist(pl, 0);
+  });
+  $('#btnPlShuffle').addEventListener('click', () => {
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    if (!state.shuffle) toggleShuffle();
+    playPlaylist(pl, Math.floor(Math.random() * pl.items.length));
+  });
+
+  $('#btnPlRename').addEventListener('click', e => {
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    const name = askName(pl.name);
+    if (!name || name === pl.name) return;
+    withBusy(e.currentTarget, async () => {
+      applyPlaylists(await api('pl_rename', { id: pl.id, name }));
+      toast('名前を変更しました', 'ok');
+    });
+  });
+
+  $('#btnPlDelete').addEventListener('click', e => {
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    if (!confirm(`プレイリスト「${pl.name}」（${pl.items.length}曲）を削除しますか？\n元に戻せません。お気に入りには影響しません。`)) return;
+    withBusy(e.currentTarget, async () => {
+      applyPlaylists(await api('pl_delete', { id: pl.id }));
+      state.plOpen = null;
+      renderPlaylists();
+      toast('削除しました');
+    });
+  });
+
+  $('#formPlAdd').addEventListener('submit', e => {
+    e.preventDefault();
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    const input = $('#plAddUrl');
+    const val = input.value.trim();
+    const vid = extractVideoId(val);
+    const listId = extractPlaylistId(val);
+    const btn = e.submitter;
+
+    // YouTubeのプレイリストURL → まとめて取り込み
+    if (listId && !isUnimportableList(listId)) {
+      const room = state.plMaxItems - pl.items.length;
+      const msg = vid
+        ? `このURLにはプレイリストが含まれています。\n\n「OK」→ プレイリストの曲をまとめて「${pl.name}」に追加\n「キャンセル」→ この1曲だけ追加`
+        : `このプレイリストの曲を、まとめて「${pl.name}」に追加しますか？（あと${room}曲まで入ります）`;
+      if (confirm(msg)) {
+        withBusy(btn, async () => {
+          if (btn) btn.textContent = '読み込み中…';
+          toast('プレイリストを読み込んでいます…');
+          const r = await api('pl_import', { id: pl.id, url: val });
+          applyPlaylists(r);
+          const notes = [];
+          if (r.duplicated) notes.push(`登録済み${r.duplicated}曲`);
+          if (r.unavailable) notes.push(`再生できない${r.unavailable}曲`);
+          if (r.full) notes.push(`上限を超えた${r.full}曲`);
+          const tail = notes.length ? `（${notes.join('、')}は除外）` : '';
+          if (r.added.length) {
+            toast(`「${pl.name}」に${r.added.length}曲を追加しました${tail}`, 'ok');
+            input.value = '';
+          } else {
+            toast(`追加できる曲がありませんでした${tail}`, 'error');
+          }
+        });
+        return;
+      }
+      if (!vid) return;
+    } else if (listId && !vid) {
+      toast('「ミックス」や「後で見る」などの自動・個人用リストは読み込めません。通常のプレイリストか、動画のURLを貼ってください', 'error');
+      return;
+    }
+
+    if (!vid) {
+      toast('YouTubeの動画またはプレイリストのURLを貼り付けてください', 'error');
+      return;
+    }
+    withBusy(btn, async () => {
+      const r = await api('pl_add', { id: pl.id, url: vid });
+      applyPlaylists(r);
+      toastAddResult(r, pl.name);
+      if ((r.added || []).length) input.value = '';
+    });
+  });
+
+  $('#plItems').addEventListener('click', e => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    const i = Number(btn.closest('.track').dataset.i);
+    const act = btn.dataset.act;
+    if (act === 'pi-play') playPlaylist(pl, i);
+    else if (act === 'pi-up') movePlItem(pl, i, -1);
+    else if (act === 'pi-down') movePlItem(pl, i, 1);
+    else if (act === 'pi-remove') removePlItem(pl, i);
+    else if (act === 'pi-topl') openPicker([pl.items[i]]);
+  });
+
+  $('#btnPlFromFav').addEventListener('click', openFavPicker);
+
+  $('#btnNowToPl').addEventListener('click', () => {
+    const it = currentItem();
+    if (it) openPicker([it]);
+  });
+}
+
+/* ---------- ダイアログ：どのプレイリストに入れるか ---------- */
+function openPicker(items, suggestName) {
+  items = (items || []).filter(it => it && it.videoId)
+    .map(it => ({ videoId: it.videoId, title: it.title, channel: it.channel || '' }));
+  if (!items.length) return;
+  if (!state.plLoaded) {
+    refreshPlaylists().then(() => openPicker(items, suggestName)).catch(e => toast(e.message, 'error'));
+    return;
+  }
+  state.pickItems = items;
+  state.pickSuggest = suggestName || '';
+  $('#pickLead').textContent = items.length === 1
+    ? `「${items[0].title}」を追加するプレイリストを選んでください`
+    : `${items.length}曲を追加するプレイリストを選んでください`;
+  renderPicker();
+  showDialog($('#dlgPick'));
+}
+
+function renderPicker() {
+  const items = state.pickItems;
+  const rows = state.playlists.map(pl => {
+    const have = new Set(pl.items.map(x => x.videoId));
+    const fresh = items.filter(it => !have.has(it.videoId)).length;
+    const room = state.plMaxItems - pl.items.length;
+    let note = `${pl.items.length}曲`;
+    if (!fresh) note = items.length === 1 ? '追加済み' : 'すべて追加済み';
+    else if (room <= 0) note = '満杯';
+    const disabled = !fresh || room <= 0;
+    const cover = pl.items.length
+      ? `<img class="thumb" src="${thumb(pl.items[0].videoId)}" alt="" loading="lazy">`
+      : '<span class="thumb none">空</span>';
+    return `<li><button type="button" class="pick-item" data-id="${esc(pl.id)}" ${disabled ? 'disabled' : ''}>
+      ${cover}<span class="pick-name">${esc(pl.name)}</span><span class="pick-note">${note}</span>
+    </button></li>`;
+  }).join('');
+  const canNew = state.playlists.length < state.plMax;
+  $('#pickList').innerHTML = rows + (canNew
+    ? `<li><button type="button" class="pick-item new" data-new="1">＋ 新しいプレイリストを作って追加（あと${state.plMax - state.playlists.length}個）</button></li>`
+    : `<li class="hint">プレイリストは${state.plMax}個までです。新しく作るには、不要なプレイリストを削除してください。</li>`);
+}
+
+/* ---------- ダイアログ：お気に入りから選ぶ ---------- */
+function openFavPicker() {
+  const pl = findPlaylist(state.plOpen);
+  if (!pl) return;
+  if (!state.favorites.length) {
+    toast('お気に入りがまだありません');
+    return;
+  }
+  const have = new Set(pl.items.map(x => x.videoId));
+  $('#favPickTitle').textContent = `「${pl.name}」にお気に入りから追加`;
+  $('#favPickList').innerHTML = state.favorites.map((f, i) => {
+    const done = have.has(f.videoId);
+    return `<li><label class="check-row ${done ? 'is-done' : ''}">
+      <input type="checkbox" value="${i}" ${done ? 'checked disabled' : ''}>
+      <img class="thumb" src="${thumb(f.videoId)}" alt="" loading="lazy">
+      <span class="track-text">
+        <span class="track-title">${esc(f.title)}</span>
+        <span class="track-sub">${done ? '追加済み' : esc(f.channel)}</span>
+      </span>
+    </label></li>`;
+  }).join('');
+  updateFavPickCount();
+  showDialog($('#dlgFav'));
+}
+
+function favPickBoxes() {
+  return $$('#favPickList input[type="checkbox"]:not(:disabled)');
+}
+
+function updateFavPickCount() {
+  const pl = findPlaylist(state.plOpen);
+  const boxes = favPickBoxes();
+  const n = boxes.filter(b => b.checked).length;
+  const room = pl ? state.plMaxItems - pl.items.length : 0;
+  $('#favPickCount').textContent = `${n}曲を選択中（あと${room}曲入ります）`;
+  $('#favPickOk').disabled = !n;
+  $('#favPickAll').textContent = boxes.length && boxes.every(b => b.checked) ? '選択を解除' : 'すべて選ぶ';
+  $('#favPickAll').hidden = !boxes.length;
+}
+
+/* ---------- ダイアログ共通 ---------- */
+function showDialog(dlg) {
+  if (typeof dlg.showModal === 'function') {
+    if (!dlg.open) dlg.showModal();
+  } else {
+    dlg.setAttribute('open', '');
+  }
+}
+function closeDialog(dlg) {
+  if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  else dlg.removeAttribute('open');
+}
+function closeDialogs() {
+  $$('dialog.sheet').forEach(closeDialog);
+}
+
+function bindDialogs() {
+  $$('dialog.sheet').forEach(dlg => {
+    dlg.addEventListener('click', e => {
+      if (e.target === dlg || e.target.closest('[data-close]')) closeDialog(dlg);
+    });
+  });
+
+  $('#pickList').addEventListener('click', e => {
+    const btn = e.target.closest('.pick-item');
+    if (!btn || btn.disabled) return;
+    const items = state.pickItems;
+    const all = $$('#pickList .pick-item');
+
+    const run = async fn => {
+      if (all.some(b => b.dataset.busy)) return;
+      all.forEach(b => { b.dataset.busy = '1'; b.disabled = true; });
+      try {
+        await fn();
+        closeDialog($('#dlgPick'));
+      } catch (err) {
+        toast(err.message, 'error');
+        renderPicker();
+      }
+    };
+
+    if (btn.dataset.new) {
+      const name = askName(state.pickSuggest && !state.playlists.some(p => p.name === state.pickSuggest)
+        ? state.pickSuggest.slice(0, 30) : nextDefaultName());
+      if (!name) return;
+      run(() => createPlaylist(name, items));
+    } else {
+      const pl = findPlaylist(btn.dataset.id);
+      if (!pl) return;
+      const have = new Set(pl.items.map(x => x.videoId));
+      run(() => addToPlaylist(pl, items.filter(it => !have.has(it.videoId))));
+    }
+  });
+
+  $('#favPickList').addEventListener('change', updateFavPickCount);
+  $('#favPickAll').addEventListener('click', () => {
+    const boxes = favPickBoxes();
+    const on = !boxes.every(b => b.checked);
+    boxes.forEach(b => { b.checked = on; });
+    updateFavPickCount();
+  });
+
+  $('#formFavPick').addEventListener('submit', e => {
+    e.preventDefault();
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    const items = favPickBoxes().filter(b => b.checked).map(b => state.favorites[Number(b.value)]).filter(Boolean)
+      .map(f => ({ videoId: f.videoId, title: f.title, channel: f.channel || '' }));
+    if (!items.length) return;
+    const room = state.plMaxItems - pl.items.length;
+    if (items.length > room) {
+      toast(`このプレイリストにはあと${room}曲しか入りません`, 'error');
+      return;
+    }
+    withBusy($('#favPickOk'), async () => {
+      await addToPlaylist(pl, items);
+      closeDialog($('#dlgFav'));
+    });
   });
 }
 
@@ -927,6 +1451,7 @@ function renderHistory() {
       </button>
       <div class="track-tools">
         <button type="button" class="icon-btn" data-act="h-add" ${added ? 'disabled' : ''}>${added ? '追加済み' : '追加'}</button>
+        <button type="button" class="icon-btn" data-act="h-topl" aria-label="プレイリストに追加">＋</button>
       </div>
     </li>`;
   }).join('');
@@ -942,6 +1467,8 @@ function bindHistory() {
       playList(state.history.map(x => ({ videoId: x.videoId, title: x.title })), i, 'history', '再生履歴');
     } else if (btn.dataset.act === 'h-add') {
       withBusy(btn, () => addFavorites([{ videoId: h.videoId, title: h.title }]));
+    } else if (btn.dataset.act === 'h-topl') {
+      openPicker([{ videoId: h.videoId, title: h.title, channel: '' }]);
     }
   });
 }
@@ -958,6 +1485,7 @@ function bindTabs() {
       document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
     });
     if (tab.id === 'tab-history') loadHistory();
+    if (tab.id === 'tab-pl' && !state.plLoaded) refreshPlaylists().catch(e => toast(e.message, 'error'));
   }));
 }
 
@@ -984,6 +1512,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindFavorites();
   bindAi();
   bindHistory();
+  bindPlaylists();
+  bindDialogs();
   bindTabs();
   loadPrefs();
   updateModeButtons();
