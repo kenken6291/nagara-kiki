@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=4">
-  <script src="app.js?v=4" defer></script>
+  <link rel="stylesheet" href="style.css?v=5">
+  <script src="app.js?v=5" defer></script>
 </head>
 <body>
 
@@ -91,9 +91,10 @@
       <input id="addUrl" class="input" type="text" inputmode="url" placeholder="YouTubeの動画・プレイリストのURLを貼り付け" required>
       <button type="submit" class="btn primary">追加</button>
     </form>
-    <div class="list-head">
+    <div class="list-head wrap">
       <button type="button" class="btn small" id="btnPlayFav">最初から再生</button>
       <button type="button" class="btn small" id="btnShufflePlayFav">シャッフル再生</button>
+      <button type="button" class="btn small" id="btnCopyFav">プレイリストにコピー</button>
     </div>
     <ul class="list" id="favList"></ul>
   </section>

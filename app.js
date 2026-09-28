@@ -32,6 +32,7 @@ const state = {
   plLoaded: false,
   pickItems: [],   // 「プレイリストに追加」で追加しようとしている曲
   pickSuggest: '',
+  pickVerb: '追加',
   ai: null,
   queue: [],      // [{videoId, title, channel}]
   order: [],      // 再生順（queue のインデックス）
@@ -668,6 +669,7 @@ function renderFavorites() {
   $('#favCount').textContent = n ? `${n}曲` : '';
   $('#btnPlayFav').disabled = !n;
   $('#btnShufflePlayFav').disabled = !n;
+  $('#btnCopyFav').disabled = !n;
   if (!n) {
     ul.innerHTML = '<li class="empty">まだお気に入りがありません。上の欄にYouTubeのURLを貼るか、「AI選曲」で曲を探して追加してください。</li>';
     return;
@@ -813,6 +815,15 @@ function bindFavorites() {
     if (state.shuffle) toggleShuffle();
     playList(state.favorites, 0, 'favorites', 'お気に入り');
   });
+  $('#btnCopyFav').addEventListener('click', () => {
+    const n = state.favorites.length;
+    if (!n) return;
+    const lead = n > state.plMaxItems
+      ? `お気に入り${n}曲のうち、先頭から最大${state.plMaxItems}曲をコピーします（1つのプレイリストは${state.plMaxItems}曲まで）。コピー先を選んでください`
+      : `お気に入りの${n}曲を、今の並び順のままコピーします。コピー先を選んでください`;
+    openPicker(state.favorites, 'お気に入り', lead, 'コピー');
+  });
+
   $('#btnShufflePlayFav').addEventListener('click', () => {
     if (!state.shuffle) toggleShuffle();
     playList(state.favorites, Math.floor(Math.random() * state.favorites.length), 'favorites', 'お気に入り');
@@ -1255,19 +1266,21 @@ function bindPlaylists() {
 }
 
 /* ---------- ダイアログ：どのプレイリストに入れるか ---------- */
-function openPicker(items, suggestName) {
+function openPicker(items, suggestName, lead, verb) {
   items = (items || []).filter(it => it && it.videoId)
     .map(it => ({ videoId: it.videoId, title: it.title, channel: it.channel || '' }));
   if (!items.length) return;
   if (!state.plLoaded) {
-    refreshPlaylists().then(() => openPicker(items, suggestName)).catch(e => toast(e.message, 'error'));
+    refreshPlaylists().then(() => openPicker(items, suggestName, lead, verb)).catch(e => toast(e.message, 'error'));
     return;
   }
   state.pickItems = items;
   state.pickSuggest = suggestName || '';
-  $('#pickLead').textContent = items.length === 1
+  state.pickVerb = verb || '追加';
+  $('#pickTitle').textContent = `プレイリストに${state.pickVerb}`;
+  $('#pickLead').textContent = lead || (items.length === 1
     ? `「${items[0].title}」を追加するプレイリストを選んでください`
-    : `${items.length}曲を追加するプレイリストを選んでください`;
+    : `${items.length}曲を追加するプレイリストを選んでください`);
   renderPicker();
   showDialog($('#dlgPick'));
 }
@@ -1279,6 +1292,7 @@ function renderPicker() {
     const fresh = items.filter(it => !have.has(it.videoId)).length;
     const room = state.plMaxItems - pl.items.length;
     let note = `${pl.items.length}曲`;
+    if (items.length > 1 && fresh && room > 0) note += `・+${Math.min(fresh, room)}曲`;
     if (!fresh) note = items.length === 1 ? '追加済み' : 'すべて追加済み';
     else if (room <= 0) note = '満杯';
     const disabled = !fresh || room <= 0;
@@ -1291,7 +1305,7 @@ function renderPicker() {
   }).join('');
   const canNew = state.playlists.length < state.plMax;
   $('#pickList').innerHTML = rows + (canNew
-    ? `<li><button type="button" class="pick-item new" data-new="1">＋ 新しいプレイリストを作って追加（あと${state.plMax - state.playlists.length}個）</button></li>`
+    ? `<li><button type="button" class="pick-item new" data-new="1">＋ 新しいプレイリストを作って${state.pickVerb}（あと${state.plMax - state.playlists.length}個）</button></li>`
     : `<li class="hint">プレイリストは${state.plMax}個までです。新しく作るには、不要なプレイリストを削除してください。</li>`);
 }
 
@@ -1380,12 +1394,17 @@ function bindDialogs() {
       const name = askName(state.pickSuggest && !state.playlists.some(p => p.name === state.pickSuggest)
         ? state.pickSuggest.slice(0, 30) : nextDefaultName());
       if (!name) return;
-      run(() => createPlaylist(name, items));
+      run(() => createPlaylist(name, items.slice(0, state.plMaxItems)));
     } else {
       const pl = findPlaylist(btn.dataset.id);
       if (!pl) return;
       const have = new Set(pl.items.map(x => x.videoId));
-      run(() => addToPlaylist(pl, items.filter(it => !have.has(it.videoId))));
+      const room = state.plMaxItems - pl.items.length;
+      const fresh = items.filter(it => !have.has(it.videoId));
+      run(async () => {
+        await addToPlaylist(pl, fresh.slice(0, room));
+        if (fresh.length > room) toast(`「${pl.name}」が${state.plMaxItems}曲に達したため、残り${fresh.length - room}曲は入りませんでした`, 'error');
+      });
     }
   });
 
