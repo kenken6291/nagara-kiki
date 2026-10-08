@@ -376,6 +376,21 @@ textarea.input { resize: vertical; line-height: 1.6; }
   font-family: var(--font-display); font-weight: 600; font-size: 1.35rem; line-height: 1.4;
   overflow-wrap: anywhere;
 }
+/* プレイリストの並べ替え */
+.pl-top-btns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+#btnPlSort.is-on { background: var(--ok); border-color: var(--ok); color: #10241F; font-weight: 700; }
+.pl-limit.is-hint { color: var(--ok); }
+.pl-card.is-sorting { border-style: dashed; border-color: var(--ok); }
+.pl-card.is-sorting .pl-open { cursor: default; }
+.pl-sortbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 0 10px 10px;
+}
+.pl-sortbar .icon-btn { flex: 1; }
+.pl-pos {
+  flex: none; min-width: 2em; text-align: center;
+  font-weight: 700; color: var(--ok);
+}
 .pl-manage { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
 /* ---------- ダイアログ ---------- */

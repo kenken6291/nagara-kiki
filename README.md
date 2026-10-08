@@ -4,7 +4,8 @@
 nagara-kiki/
 ├── index.html      … GitHub Pages
 ├── style.css       … GitHub Pages
-├── app.js          … GitHub Pages（GAS_URL を書き換える）
+├── config.js       … GitHub Pages（GAS_URL をここに書く）
+├── app.js          … GitHub Pages
 └── gas/Code.gs     … Google Apps Script に貼り付け（GitHubに置くのは任意）
 ```
 
@@ -47,12 +48,13 @@ Geminiは実在の動画IDを正確に知らないため、GAS側で「曲名 �
 
 > ⚠ Code.gs を修正したら「デプロイを管理」→ 鉛筆 → バージョン「**新バージョン**」→ デプロイ。
 > これをしないと修正が反映されません（URLは変わりません）。
+> 「新しいデプロイ」でURLが変わった場合は `config.js` だけ書き換えてアップロードしてください。
 
 ## 3. GitHub Pages
 
 1. GitHubで `nagara-kiki` リポジトリを作成（Public）
-2. `app.js` 冒頭の `CONFIG.GAS_URL` を手順2のURLに書き換え
-3. `index.html` / `style.css` / `app.js`（と任意で `gas/`）をアップロード
+2. `config.js` の `GAS_URL` を手順2のURLに書き換え
+3. `index.html` / `style.css` / `config.js` / `app.js`（と任意で `gas/`）をアップロード
 4. Settings → Pages → Branch: `main` / `/(root)` → Save
 5. 数分後 `https://kenken6291.github.io/nagara-kiki/` で公開
 
@@ -86,6 +88,7 @@ Geminiは実在の動画IDを正確に知らないため、GAS側で「曲名 �
 - 上限：1人10個、1プレイリスト200曲、名前30文字（Code.gs 冒頭の `MY_PLAYLISTS_MAX` などで変更可）
 - 追加方法：動画URL、YouTubeプレイリストURL（`YOUTUBE_API_KEY` 必要）、お気に入りから選択、お気に入り・AI選曲・履歴・再生中の曲の「＋」
 - お気に入りとは独立（お気に入りから消してもプレイリストには残る）
+- 一覧の表示順は「並べ替え」→ ◀ 前へ / 後へ ▶ → 「完了」で自由に変更できる（`Playlists` シートの `sort_order` 列に保存。既存シートには列が自動追加される）
 
 ## 8. できないこと（YouTube側の制約）
 

@@ -1,10 +1,10 @@
 'use strict';
 
 /* =========================================================
- * 設定（GASをデプロイしたら GAS_URL を書き換える）
+ * 設定（GAS_URL は config.js で設定する）
  * ========================================================= */
 const CONFIG = {
-  GAS_URL: 'https://script.google.com/macros/s/AKfycbwfuR-m17cQY-i27U12rLRMjZMEz2roXuF8gMBxzdm9H_VyqBJMuvtLYa6LmN70WoNihw/exec',
+  GAS_URL: String((window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '').trim(),
   SESSION_KEY: 'nagarakiki_session',
   PREFS_KEY: 'nagarakiki_prefs',
 };
@@ -49,6 +49,8 @@ const state = {
   errorStreak: 0,
   reorderTimer: null,
   plReorderTimer: null,
+  plSorting: false,     // プレイリスト一覧の並べ替えモード
+  plOrderTimer: null,
 };
 
 /* =========================================================
@@ -158,8 +160,35 @@ function storageRemove(key) {
 /* =========================================================
  * API（GAS） — text/plain で送信し、302リダイレクトは fetch が追従
  * ========================================================= */
+/** 何度送っても結果が変わらない（読み取りだけの）操作。通信失敗時は自動で再試行する */
+const READ_ACTIONS = ['verify_session', 'get_favorites', 'get_history', 'pl_list'];
+const API_TIMEOUT_MS = 60000;
+
 async function api(action, data = {}) {
+  const retries = READ_ACTIONS.includes(action) ? 2 : 0;
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 800 * attempt));
+    try {
+      return await apiOnce(action, data);
+    } catch (e) {
+      lastErr = e;
+      if (!e.retryable) break;
+      console.warn(`[api] ${action} 再試行 ${attempt + 1}/${retries}`, e.message);
+    }
+  }
+  if (lastErr.retryable && !READ_ACTIONS.includes(action)) {
+    // 書き込みは二重実行を避けるため再送しない。サーバー側で完了している場合があるので一覧を取り直す
+    lastErr.message += '（処理が完了している場合があります。画面を更新しました）';
+    refreshAfterWriteError(action);
+  }
+  throw lastErr;
+}
+
+async function apiOnce(action, data) {
   const body = JSON.stringify(Object.assign({ action, token: state.token }, data));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
   let res;
   try {
     res = await fetch(CONFIG.GAS_URL, {
@@ -167,11 +196,26 @@ async function api(action, data = {}) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body,
       redirect: 'follow',
+      signal: ctrl.signal,
     });
   } catch (e) {
-    throw new Error('サーバーに接続できませんでした。通信状況を確認してください');
+    const err = new Error(e.name === 'AbortError'
+      ? 'サーバーの応答がありません（' + API_TIMEOUT_MS / 1000 + '秒）。時間をおいてお試しください'
+      : 'サーバーに接続できませんでした。通信状況を確認してください');
+    err.retryable = true;
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`サーバーエラー（${res.status}）`);
+
+  if (!res.ok) {
+    console.error(`[api] ${action} HTTP ${res.status}`, res.url);
+    const err = new Error(res.status === 404
+      ? 'サーバーから応答を受け取れませんでした（404）。少し待ってもう一度お試しください'
+      : `サーバーエラー（${res.status}）`);
+    err.retryable = res.status === 404 || res.status >= 500;
+    throw err;
+  }
 
   let json;
   try {
@@ -192,6 +236,15 @@ async function api(action, data = {}) {
     throw err;
   }
   return json;
+}
+
+/** 書き込みの通信が失敗したとき、実際の状態を取り直して画面と合わせる */
+function refreshAfterWriteError(action) {
+  setTimeout(() => {
+    if (!state.token) return;
+    if (/^pl_/.test(action)) refreshPlaylists().catch(() => {});
+    else if (/favorite|import_playlist/.test(action)) refreshFavorites().catch(() => {});
+  }, 1500);
 }
 
 /* =========================================================
@@ -994,10 +1047,38 @@ function renderPlaylists() {
   $('#plDetail').hidden = !open;
 
   // 一覧
+  if (n < 2) state.plSorting = false;
+  const sorting = state.plSorting;
   const rest = state.plMax - n;
-  $('#plLimit').textContent = `${n} / ${state.plMax} 個`;
-  $('#btnPlNew').disabled = rest <= 0;
-  const cards = state.playlists.map(pl => `
+  const limit = $('#plLimit');
+  limit.textContent = sorting ? '◀ ▶ で順番を変えて「完了」を押してください' : `${n} / ${state.plMax} 個`;
+  limit.classList.toggle('is-hint', sorting);
+  $('#btnPlNew').disabled = rest <= 0 || sorting;
+  const sortBtn = $('#btnPlSort');
+  sortBtn.hidden = n < 2;
+  sortBtn.textContent = sorting ? '完了' : '並べ替え';
+  sortBtn.classList.toggle('is-on', sorting);
+  sortBtn.setAttribute('aria-pressed', String(sorting));
+
+  if (sorting) {
+    $('#plGrid').innerHTML = state.playlists.map((pl, i) => `
+    <li class="pl-card is-sorting" data-id="${esc(pl.id)}" data-i="${i}">
+      <div class="pl-open">
+        ${coverHtml(pl)}
+        <span class="pl-meta">
+          <span class="pl-meta-name">${esc(pl.name)}</span>
+          <span class="pl-meta-sub">${pl.items.length}曲</span>
+        </span>
+      </div>
+      <div class="pl-sortbar">
+        <button type="button" class="icon-btn" data-act="pl-prev" aria-label="${esc(pl.name)} を前へ" ${i === 0 ? 'disabled' : ''}>◀ 前へ</button>
+        <span class="pl-pos">${i + 1}</span>
+        <button type="button" class="icon-btn" data-act="pl-next" aria-label="${esc(pl.name)} を後へ" ${i === n - 1 ? 'disabled' : ''}>後へ ▶</button>
+      </div>
+    </li>`).join('');
+  }
+
+  const cards = sorting ? '' : state.playlists.map(pl => `
     <li class="pl-card ${state.source === 'pl:' + pl.id ? 'is-playing' : ''}" data-id="${esc(pl.id)}">
       <button type="button" class="pl-open" data-act="pl-open" aria-label="${esc(pl.name)} を開く">
         ${coverHtml(pl)}
@@ -1011,7 +1092,7 @@ function renderPlaylists() {
   const slot = rest > 0
     ? `<li class="pl-slot">${n ? `あと${rest}個つくれます` : '「＋ 新しいプレイリスト」から<br>最大' + state.plMax + '個までつくれます'}</li>`
     : '';
-  $('#plGrid').innerHTML = !state.plLoaded ? '<li class="empty">読み込んでいます…</li>' : cards + slot;
+  if (!sorting) $('#plGrid').innerHTML = !state.plLoaded ? '<li class="empty">読み込んでいます…</li>' : cards + slot;
 
   // 中身
   if (!open) return;
@@ -1112,6 +1193,40 @@ function movePlItem(pl, i, dir) {
   }, 900);
 }
 
+/* ---------- プレイリスト自体の並べ替え ---------- */
+function setPlSorting(on) {
+  state.plSorting = on;
+  if (!on) savePlOrderNow();
+  renderPlaylists();
+}
+
+function movePlaylist(i, dir) {
+  const j = i + dir;
+  const a = state.playlists;
+  if (j < 0 || j >= a.length) return;
+  [a[i], a[j]] = [a[j], a[i]];
+  renderPlaylists();
+  const btn = $(`#plGrid .pl-card[data-i="${j}"] [data-act="${dir < 0 ? 'pl-prev' : 'pl-next'}"]`);
+  if (btn && !btn.disabled) btn.focus();
+  else {
+    const other = $(`#plGrid .pl-card[data-i="${j}"] [data-act="${dir < 0 ? 'pl-next' : 'pl-prev'}"]`);
+    if (other) other.focus();
+  }
+  clearTimeout(state.plOrderTimer);
+  state.plOrderTimer = setTimeout(savePlOrderNow, 1500);
+}
+
+function savePlOrderNow() {
+  if (!state.plOrderTimer) return;
+  clearTimeout(state.plOrderTimer);
+  state.plOrderTimer = null;
+  api('pl_order', { ids: state.playlists.map(p => p.id) })
+    .catch(e => {
+      toast('並び順を保存できませんでした：' + e.message, 'error');
+      refreshPlaylists().catch(() => {});
+    });
+}
+
 async function removePlItem(pl, i) {
   const it = pl.items[i];
   if (!it || !confirm(`「${it.title}」を「${pl.name}」から外しますか？\n（お気に入りには影響しません）`)) return;
@@ -1137,9 +1252,16 @@ function bindPlaylists() {
     });
   });
 
+  $('#btnPlSort').addEventListener('click', () => setPlSorting(!state.plSorting));
+
   $('#plGrid').addEventListener('click', e => {
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
+    if (btn.dataset.act === 'pl-prev' || btn.dataset.act === 'pl-next') {
+      movePlaylist(Number(btn.closest('.pl-card').dataset.i), btn.dataset.act === 'pl-prev' ? -1 : 1);
+      return;
+    }
+    if (state.plSorting) return;
     const pl = findPlaylist(btn.closest('.pl-card').dataset.id);
     if (!pl) return;
     if (btn.dataset.act === 'pl-open') openPlaylist(pl.id);
@@ -1538,8 +1660,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateModeButtons();
   loadYouTubeApi();
 
-  if (CONFIG.GAS_URL.includes('ここに')) {
-    toast('app.js の GAS_URL を設定してください', 'error');
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(CONFIG.GAS_URL)) {
+    toast('config.js の GAS_URL を設定してください（…/exec で終わるURL）', 'error');
   }
 
   const s = loadSession();
