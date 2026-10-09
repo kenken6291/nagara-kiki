@@ -109,6 +109,7 @@ main { max-width: 720px; margin: 0 auto; padding: 0 16px 80px; }
   display: grid; place-items: center;
   padding: 20px; text-align: center;
   color: var(--muted); font-size: .95rem;
+  pointer-events: none; /* 下のYouTubeプレイヤー（広告のスキップ等）へのタップを邪魔しない */
 }
 
 .now { margin: 14px 2px 4px; min-height: 3.2em; display: flex; align-items: flex-start; gap: 10px; }
@@ -520,4 +521,14 @@ dialog.sheet::backdrop { background: rgba(8, 9, 20, .78); }
 
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
+}
+
+/* バージョン表示 */
+.app-foot {
+  margin: 24px 0 0;
+  padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  text-align: center;
+  font-size: .75rem;
+  color: var(--muted);
+  letter-spacing: .04em;
 }

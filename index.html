@@ -8,9 +8,32 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=5">
-  <script src="config.js?v=1" defer></script>
-  <script src="app.js?v=6" defer></script>
+  <!--
+    読み込み順：config.js（毎回最新を取得）→ style.css / app.js（config.js の APP_VERSION をキャッシュ対策に使用）
+    更新時は config.js の APP_VERSION を上げるだけで、style.css / app.js も確実に最新になる
+  -->
+  <style>html.loading body { visibility: hidden; }</style>
+  <script>
+  (function () {
+    var d = document, root = d.documentElement;
+    root.classList.add('loading');
+    var shown = false;
+    function show() { if (!shown) { shown = true; root.classList.remove('loading'); } }
+    setTimeout(show, 4000); // 万一CSSが読めなくても画面は出す
+    function add(tag, attrs, cb) {
+      var el = d.createElement(tag);
+      for (var k in attrs) el[k] = attrs[k];
+      if (cb) { el.onload = cb; el.onerror = cb; }
+      d.head.appendChild(el);
+    }
+    add('script', { src: 'config.js?t=' + Date.now() }, function () {
+      var c = window.APP_CONFIG || {};
+      var v = encodeURIComponent(c.APP_VERSION || Date.now());
+      add('link', { rel: 'stylesheet', href: 'style.css?v=' + v }, show);
+      add('script', { src: 'app.js?v=' + v });
+    });
+  })();
+  </script>
 </head>
 <body>
 
@@ -327,6 +350,8 @@
     </div>
   </form>
 </dialog>
+
+<footer class="app-foot"><span id="appVersion"></span></footer>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

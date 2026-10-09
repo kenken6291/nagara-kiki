@@ -5,6 +5,8 @@
  * ========================================================= */
 const CONFIG = {
   GAS_URL: String((window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '').trim(),
+  APP_VERSION: String((window.APP_CONFIG && window.APP_CONFIG.APP_VERSION) || '').trim(),
+  APP_UPDATED: String((window.APP_CONFIG && window.APP_CONFIG.APP_UPDATED) || '').trim(),
   SESSION_KEY: 'nagarakiki_session',
   PREFS_KEY: 'nagarakiki_prefs',
 };
@@ -424,6 +426,7 @@ async function logout() {
     playlists: [], plOpen: null, plLoaded: false, pickItems: [],
   });
   $('#aiResult').innerHTML = '';
+  $('#screenEmpty').hidden = false;
   closeDialogs();
   renderPlaylists();
   updateNowPlaying();
@@ -521,6 +524,8 @@ function playCurrent() {
   const item = currentItem();
   if (!item) return;
   state.lastLogged = null;
+  // 広告再生中は PLAYING が来ないため、読み込み開始時点で案内文を消す（広告の「スキップ」を押せるように）
+  $('#screenEmpty').hidden = true;
   updateNowPlaying();
   renderFavorites();
   renderPlaylists();
@@ -1647,7 +1652,20 @@ function savePrefs() {
 /* =========================================================
  * 起動
  * ========================================================= */
-document.addEventListener('DOMContentLoaded', async () => {
+/* app.js は config.js 読み込み後に動的に読み込まれるため、DOMContentLoaded 済みの場合もある */
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+
+/** バージョン情報を画面下に表示 */
+function showVersion() {
+  const el = $('#appVersion');
+  if (!el) return;
+  if (!CONFIG.APP_VERSION) { el.textContent = ''; return; }
+  el.textContent = `ver ${CONFIG.APP_VERSION}` + (CONFIG.APP_UPDATED ? `（${CONFIG.APP_UPDATED} 更新）` : '');
+}
+
+async function boot() {
+  showVersion();
   bindAuth();
   bindPlayer();
   bindFavorites();
@@ -1681,4 +1699,4 @@ document.addEventListener('DOMContentLoaded', async () => {
       showAuth('login');
     }
   }
-});
+}
