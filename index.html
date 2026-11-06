@@ -152,6 +152,13 @@
         </div>
       </div>
       <ul class="pl-grid" id="plGrid"></ul>
+      <div class="excel-bar">
+        <span class="excel-label">Excel</span>
+        <button type="button" class="btn small" id="btnXlsxExport">すべて書き出す</button>
+        <button type="button" class="btn small" id="btnXlsxImport">取り込む</button>
+        <button type="button" class="link" id="btnXlsxTemplate">ひな形をダウンロード</button>
+        <input type="file" id="xlsxFile" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
+      </div>
     </div>
 
     <!-- 中身 -->
@@ -178,6 +185,7 @@
       </div>
       <ul class="list" id="plItems"></ul>
       <div class="pl-manage">
+        <button type="button" class="btn small" id="btnPlXlsx">Excelに書き出す</button>
         <button type="button" class="btn small" id="btnPlRename">名前を変更</button>
         <button type="button" class="btn small danger" id="btnPlDelete">このプレイリストを削除</button>
       </div>
@@ -237,6 +245,7 @@
         <button type="button" class="btn small" id="btnShPlay">最初から再生</button>
         <button type="button" class="btn small" id="btnShShuffle">シャッフル再生</button>
         <button type="button" class="btn small" id="btnShCopy">自分のプレイリストにコピー</button>
+        <button type="button" class="btn small" id="btnShXlsx">Excelに書き出す</button>
       </div>
       <ul class="list" id="shItems"></ul>
     </div>
@@ -460,6 +469,26 @@
   </form>
 </dialog>
 
+<!-- Excel 取り込み -->
+<dialog class="sheet" id="dlgImport" aria-labelledby="importTitle">
+  <form class="sheet-card" id="formImport">
+    <h2 class="sheet-title" id="importTitle">Excelから取り込む</h2>
+    <p class="hint" id="importLead"></p>
+    <div class="pick-bar">
+      <button type="button" class="link" id="importAll">選択を解除</button>
+      <span class="count" id="importCount"></span>
+    </div>
+    <div class="sheet-body">
+      <ul class="check-list" id="importList"></ul>
+    </div>
+    <p class="hint" id="importProgress" aria-live="polite"></p>
+    <div class="sheet-foot">
+      <button type="button" class="btn" data-close>閉じる</button>
+      <button type="submit" class="btn primary" id="importOk">取り込む</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- 公開設定 -->
 <dialog class="sheet" id="dlgShare" aria-labelledby="shareTitle">
   <form class="sheet-card" id="formShare">
@@ -529,6 +558,10 @@
 
       <h3>3. プレイリスト（1人30個まで）</h3>
       <p>「プレイリスト」→「＋ 新しいプレイリスト」で作成します。1つに200曲まで入ります。「並べ替え」で一覧の順番を変えられます。</p>
+
+      <h3>Excelで書き出す・取り込む</h3>
+      <p>「プレイリスト」一覧の下にある「Excel」から、すべてのプレイリストを1つのExcelファイルに書き出せます。1つだけなら、プレイリストを開いて「Excelに書き出す」。</p>
+      <p>取り込むときは、列に「プレイリスト名」「曲名」「URL」があれば読み込めます（書き出したファイルや「ひな形」をそのまま編集するのが簡単です）。同じ名前のプレイリストがあれば後ろに追加し、無ければ新しく作ります。すでに入っている曲は重複して入りません。</p>
 
       <h3>4. 家族・友人だけに公開する</h3>
       <ol>

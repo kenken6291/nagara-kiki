@@ -15,7 +15,7 @@
  * Code.gs を修正したら「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→ デプロイ。
  */
 
-const SERVER_VERSION = '1.8.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
+const SERVER_VERSION = '1.9.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
 const TERMS_VERSION = '2026-11-07';  // 注意事項・免責事項の版（app.js の TERMS_VERSION と同じにする）
 
 const APP_NAME = 'ながら聴き';

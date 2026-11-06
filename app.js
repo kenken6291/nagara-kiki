@@ -118,7 +118,8 @@ const state = {
   sharedLoaded: false,
   shOpen: null,         // 開いている「公開されたプレイリスト」のID
   shareEdit: null,      // 公開設定ダイアログの編集中の値 {id, on, to:Set}
-  pendingShareId: '',   // 共有リンク（?share=）で開かれたプレイリスト
+  pendingShareId: '',
+  importData: null,     // Excel取り込みの確認中データ   // 共有リンク（?share=）で開かれたプレイリスト
   serverVersion: '',
   voice: { on: false, rec: null, base: '', final: '', interim: '', lastAt: 0, startAt: 0, timer: null },
   narration: { audio: null, url: '', speaking: false, volume: null },
@@ -2603,6 +2604,368 @@ function bindDocs() {
 }
 
 /* =========================================================
+ * Excel 書き出し・取り込み（SheetJS をボタンを押したときだけ読み込む）
+ * ========================================================= */
+const XLSX_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+const XL_HEAD = ['プレイリスト名', '順番', '種類', '曲名', 'チャンネル・アーティスト', 'URL'];
+let xlsxLoading = null;
+
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!xlsxLoading) {
+    xlsxLoading = new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = XLSX_SRC;
+      sc.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('Excel機能を読み込めませんでした')));
+      sc.onerror = () => {
+        xlsxLoading = null;
+        reject(new Error('Excel機能を読み込めませんでした。通信状況を確認してください'));
+      };
+      document.head.appendChild(sc);
+    });
+  }
+  return xlsxLoading;
+}
+
+function trackUrl(it) {
+  return isAmazon(it) ? (it.url || it.embed || '') : `https://www.youtube.com/watch?v=${it.videoId}`;
+}
+
+function ymd() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function xlHelpSheet(X) {
+  const aoa = [
+    ['ながら聴き プレイリストのExcel（取り込み用の説明）'],
+    [],
+    ['列', '書き方'],
+    ['プレイリスト名', '必須。同じ名前の行が1つのプレイリストになります（30文字まで）。空欄の行は、すぐ上の行と同じプレイリストに入ります。'],
+    ['順番', '任意。この数字の順に並べます（空欄なら上から順）。'],
+    ['種類', '任意（YouTube／Amazon Music）。URLから自動で判断するので空欄でかまいません。'],
+    ['曲名', '任意。空欄なら YouTube は自動で取得します（Amazon Music は取れないことがあります）。'],
+    ['チャンネル・アーティスト', '任意。'],
+    ['URL', '必須。YouTube の動画URL、または Amazon Music の曲・アルバム・プレイリストのURL。'],
+    [],
+    ['記入例（「プレイリスト」シートに、このように書きます）'],
+    XL_HEAD,
+    ['朝の散歩', 1, 'YouTube', '（曲名）', '（アーティスト名）', 'https://www.youtube.com/watch?v=（動画ID）'],
+    ['朝の散歩', 2, 'Amazon Music', '（曲名）', '（アーティスト名）', 'https://music.amazon.co.jp/albums/（ID）'],
+    [],
+    ['注意'],
+    ['・1つのプレイリストは200曲まで、プレイリストは1人30個までです。'],
+    ['・同じ名前のプレイリストがすでにあれば、その後ろに追加します。すでに入っている曲は重複して入りません。'],
+    ['・取り込むのは「プレイリスト」シートです（このシートは読み込みません）。'],
+  ];
+  const ws = X.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 26 }, { wch: 96 }];
+  return ws;
+}
+
+async function exportXlsx(lists, label) {
+  const X = await loadXlsx();
+  const rows = [];
+  lists.forEach(pl => pl.items.forEach((it, i) => {
+    rows.push([pl.name, i + 1, isAmazon(it) ? 'Amazon Music' : 'YouTube', it.title, it.channel || '', trackUrl(it)]);
+  }));
+  const ws = X.utils.aoa_to_sheet([XL_HEAD, ...rows]);
+  ws['!cols'] = [{ wch: 24 }, { wch: 6 }, { wch: 14 }, { wch: 46 }, { wch: 26 }, { wch: 52 }];
+  if (rows.length) ws['!autofilter'] = { ref: ws['!ref'] };
+  const wb = X.utils.book_new();
+  X.utils.book_append_sheet(wb, ws, 'プレイリスト');
+  X.utils.book_append_sheet(wb, xlHelpSheet(X), '使い方');
+  const safe = String(label).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
+  X.writeFile(wb, `ながら聴き_${safe}_${ymd()}.xlsx`);
+  return rows.length;
+}
+
+/* ---------- 取り込み：ファイルを読む ---------- */
+const URLISH = /https?:\/\/|youtu\.?be|amazon\.|amzn\.|<iframe/i;
+
+function normPlName(v) {
+  return String(v || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 30);
+}
+
+/** 1シート分の行 → [{name, items:[…], invalid}] */
+function parseXlRows(rows, fallbackName) {
+  let h = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    if ((rows[i] || []).some(c => /^\s*(url|ｕｒｌ|リンク|link)/i.test(String(c)))) { h = i; break; }
+  }
+  const col = {};
+  if (h >= 0) {
+    rows[h].forEach((c, j) => {
+      const t = String(c).trim();
+      if (!t) return;
+      if (col.name == null && /プレイリスト|リスト名|playlist/i.test(t)) col.name = j;
+      else if (col.url == null && /^(url|ｕｒｌ|リンク|link)/i.test(t)) col.url = j;
+      else if (col.title == null && /曲名|タイトル|title|^曲$/i.test(t)) col.title = j;
+      else if (col.channel == null && /チャンネル|アーティスト|歌手|artist|channel/i.test(t)) col.channel = j;
+      else if (col.order == null && /順|番号|^no\.?$|order/i.test(t)) col.order = j;
+    });
+  }
+  const cell = (r, k) => (col[k] != null ? String(r[col[k]] ?? '').trim() : '');
+  const groups = new Map();
+  let last = '';
+  let invalid = 0;
+  rows.slice(h + 1).forEach((r, seq) => {
+    if (!r || !r.some(c => String(c).trim())) return;
+    let url = cell(r, 'url');
+    if (!URLISH.test(url)) {
+      const c = r.find(v => URLISH.test(String(v)));
+      url = c ? String(c).trim() : '';
+    }
+    if (!url) return;
+    let name = normPlName(cell(r, 'name'));
+    if (!name) name = last || fallbackName;
+    last = name;
+
+    const title = cell(r, 'title').slice(0, 200);
+    const channel = cell(r, 'channel').slice(0, 100);
+    let item;
+    if (isAmazonInput(url)) {
+      item = { url, kind: 'amazon', title, channel };
+    } else {
+      const vid = extractVideoId(url);
+      if (!vid) { invalid++; return; }
+      item = { url: vid, videoId: vid, kind: 'yt', title, channel };
+    }
+    const ord = Number(cell(r, 'order'));
+    if (!groups.has(name)) groups.set(name, { name, rows: [], keys: new Set() });
+    const g = groups.get(name);
+    const key = item.kind === 'yt' ? item.videoId : url;
+    if (g.keys.has(key)) return;
+    g.keys.add(key);
+    g.rows.push({ item, ord: Number.isFinite(ord) && cell(r, 'order') !== '' ? ord : Infinity, seq });
+  });
+  return {
+    invalid,
+    groups: [...groups.values()].map(g => ({
+      name: g.name,
+      items: g.rows.sort((a, b) => (a.ord - b.ord) || (a.seq - b.seq)).map(x => x.item),
+    })),
+  };
+}
+
+async function readImportFile(file) {
+  const X = await loadXlsx();
+  const wb = X.read(await file.arrayBuffer(), { type: 'array' });
+  const base = normPlName(file.name.replace(/\.[^.]+$/, '').replace(/^ながら聴き_|_\d{8}$/g, '')) || '取り込み';
+  const names = wb.SheetNames.filter(n => n !== '使い方');
+  const order = names.includes('プレイリスト') ? ['プレイリスト', ...names.filter(n => n !== 'プレイリスト')] : names;
+  for (const n of order) {
+    const rows = X.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '', raw: false, blankrows: false });
+    const fallback = /^(sheet\d*|シート\d*|プレイリスト)$/i.test(n) ? base : normPlName(n);
+    const r = parseXlRows(rows, fallback);
+    if (r.groups.length) return r;
+  }
+  return { groups: [], invalid: 0 };
+}
+
+/* ---------- 取り込み：確認ダイアログ ---------- */
+function findPlaylistByName(name) {
+  return state.playlists.find(p => normPlName(p.name) === name) || null;
+}
+
+function openImportDialog(parsed, fileName) {
+  state.importData = {
+    groups: parsed.groups.map(g => Object.assign(g, { selected: true })),
+    invalid: parsed.invalid,
+    running: false,
+  };
+  $('#importTitle').textContent = `「${fileName}」を取り込む`;
+  $('#importProgress').textContent = '';
+  renderImportDialog();
+  showDialog($('#dlgImport'));
+}
+
+function renderImportDialog() {
+  const d = state.importData;
+  if (!d) return;
+  const total = d.groups.reduce((n, g) => n + g.items.length, 0);
+  $('#importLead').textContent = `${d.groups.length}個のプレイリスト・${total}曲が見つかりました。` +
+    (d.invalid ? `（読み取れないURL ${d.invalid}件は除外）` : '') +
+    '取り込むものを選んでください。同じ名前のプレイリストがあれば、その後ろに追加します。';
+
+  let newNeeded = 0;
+  $('#importList').innerHTML = d.groups.map((g, i) => {
+    const pl = findPlaylistByName(g.name);
+    const room = pl ? state.plMaxItems - pl.items.length : state.plMaxItems;
+    if (!pl && g.selected) newNeeded++;
+    const over = g.items.length > room;
+    const note = pl
+      ? `既存（今${pl.items.length}曲）に追加${over ? `・あと${Math.max(0, room)}曲まで` : ''}`
+      : `新しく作成${over ? `・${state.plMaxItems}曲まで` : ''}`;
+    return `<li><label class="check-row">
+      <input type="checkbox" value="${i}" ${g.selected ? 'checked' : ''} ${d.running ? 'disabled' : ''}>
+      <span class="track-text">
+        <span class="track-title">${esc(g.name)}</span>
+        <span class="track-sub">${g.items.length}曲・${note}</span>
+      </span>
+    </label></li>`;
+  }).join('');
+
+  const rest = state.plMax - state.playlists.length;
+  const sel = d.groups.filter(g => g.selected);
+  const tooMany = newNeeded > rest;
+  $('#importCount').textContent = tooMany
+    ? `新しく作れるのはあと${rest}個です（${newNeeded}個選択中）`
+    : `${sel.length}個を選択中`;
+  $('#importCount').classList.toggle('warn', tooMany);
+  $('#importAll').textContent = d.groups.every(g => g.selected) ? '選択を解除' : 'すべて選ぶ';
+  $('#importAll').hidden = d.running;
+  $('#importOk').disabled = d.running || !sel.length || tooMany;
+}
+
+/** サーバーに一度に送る量：最大100曲、タイトル不明のYouTubeは25曲、タイトル不明のAmazonは5件まで */
+function importBatches(items) {
+  const out = [];
+  let cur = [];
+  let noTitleYt = 0;
+  let noTitleAm = 0;
+  items.forEach(it => {
+    const yt = it.kind === 'yt' && !it.title;
+    const am = it.kind === 'amazon' && !it.title;
+    if (cur.length && (cur.length >= 100 || (yt && noTitleYt >= 25) || (am && noTitleAm >= 5))) {
+      out.push(cur);
+      cur = [];
+      noTitleYt = 0;
+      noTitleAm = 0;
+    }
+    cur.push(it);
+    if (yt) noTitleYt++;
+    if (am) noTitleAm++;
+  });
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+function apiItem(it) {
+  return { url: it.url, videoId: it.videoId, kind: it.kind, title: it.title, channel: it.channel };
+}
+
+async function runImport() {
+  const d = state.importData;
+  if (!d || d.running) return;
+  const sel = d.groups.filter(g => g.selected);
+  if (!sel.length) return;
+  d.running = true;
+  renderImportDialog();
+  const progress = $('#importProgress');
+  const sum = { created: 0, appended: 0, added: 0, skipped: 0 };
+  try {
+    for (let gi = 0; gi < sel.length; gi++) {
+      const g = sel[gi];
+      let pl = findPlaylistByName(g.name);
+      const room = pl ? state.plMaxItems - pl.items.length : state.plMaxItems;
+      const items = g.items.slice(0, Math.max(0, room));
+      sum.skipped += g.items.length - items.length;
+      if (!items.length) continue;
+      const batches = importBatches(items);
+      for (let bi = 0; bi < batches.length; bi++) {
+        progress.textContent = `取り込み中… ${gi + 1}/${sel.length}「${g.name}」（${bi + 1}/${batches.length}）`;
+        const payload = batches[bi].map(apiItem);
+        let r;
+        if (!pl) {
+          r = await api('pl_create', { name: g.name, items: payload });
+          applyPlaylists(r);
+          pl = findPlaylist(r.createdId);
+          sum.created++;
+        } else {
+          r = await api('pl_add', { id: pl.id, items: payload });
+          applyPlaylists(r);
+          pl = findPlaylist(pl.id);
+          if (bi === 0 && !r.createdId) sum.appended++;
+        }
+        sum.added += (r.added || []).length;
+        sum.skipped += (r.skipped || []).length;
+        if (!pl) break;
+      }
+    }
+    const parts = [];
+    if (sum.created) parts.push(`新規${sum.created}個`);
+    if (sum.appended) parts.push(`追加${sum.appended}個`);
+    toast(`取り込みました（${parts.join('・') || 'プレイリスト0個'}、${sum.added}曲${sum.skipped ? `／重複・上限などで${sum.skipped}曲は除外` : ''}）`, 'ok');
+    closeDialog($('#dlgImport'));
+  } catch (e) {
+    progress.textContent = `途中で止まりました：${e.message}（ここまでに${sum.added}曲を取り込み済み）`;
+    toast(e.message, 'error');
+    refreshPlaylists().catch(() => {});
+  } finally {
+    d.running = false;
+    if ($('#dlgImport').open) renderImportDialog();
+  }
+}
+
+function bindExcel() {
+  const run = (btn, fn) => withBusy(btn, async () => {
+    btn.textContent = '準備中…';
+    await fn();
+  });
+
+  $('#btnXlsxExport').addEventListener('click', e => run(e.currentTarget, async () => {
+    if (!state.playlists.length) {
+      await exportXlsx([], 'ひな形');
+      toast('プレイリストがまだないので、ひな形を書き出しました');
+      return;
+    }
+    const n = await exportXlsx(state.playlists, 'プレイリスト');
+    toast(`${state.playlists.length}個のプレイリスト（${n}曲）を書き出しました`, 'ok');
+  }));
+  $('#btnXlsxTemplate').addEventListener('click', e => run(e.currentTarget, async () => {
+    await exportXlsx([], 'ひな形');
+    toast('ひな形を書き出しました。「使い方」シートも見てください', 'ok');
+  }));
+  $('#btnPlXlsx').addEventListener('click', e => {
+    const pl = findPlaylist(state.plOpen);
+    if (pl) run(e.currentTarget, async () => { await exportXlsx([pl], pl.name); toast('書き出しました', 'ok'); });
+  });
+  $('#btnShXlsx').addEventListener('click', e => {
+    const pl = findShared(state.shOpen);
+    if (pl) run(e.currentTarget, async () => { await exportXlsx([pl], pl.name); toast('書き出しました', 'ok'); });
+  });
+
+  $('#btnXlsxImport').addEventListener('click', () => $('#xlsxFile').click());
+  $('#xlsxFile').addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast('ファイルが大きすぎます（5MBまで）', 'error'); return; }
+    withBusy($('#btnXlsxImport'), async () => {
+      $('#btnXlsxImport').textContent = '読み込み中…';
+      if (!state.plLoaded) await refreshPlaylists();
+      const parsed = await readImportFile(file);
+      if (!parsed.groups.length) {
+        throw new Error('取り込める行が見つかりませんでした。「URL」の列に YouTube または Amazon Music のURLを入れてください（「ひな形をダウンロード」も参考に）');
+      }
+      openImportDialog(parsed, file.name);
+    });
+  });
+
+  $('#importList').addEventListener('change', e => {
+    const box = e.target.closest('input[type="checkbox"]');
+    const d = state.importData;
+    if (!box || !d) return;
+    d.groups[Number(box.value)].selected = box.checked;
+    renderImportDialog();
+  });
+  $('#importAll').addEventListener('click', () => {
+    const d = state.importData;
+    if (!d) return;
+    const on = !d.groups.every(g => g.selected);
+    d.groups.forEach(g => { g.selected = on; });
+    renderImportDialog();
+  });
+  $('#formImport').addEventListener('submit', e => {
+    e.preventDefault();
+    runImport();
+  });
+  $('#dlgImport').addEventListener('cancel', e => { if (state.importData && state.importData.running) e.preventDefault(); });
+  $('#dlgImport').addEventListener('close', () => { if (!state.importData || !state.importData.running) state.importData = null; });
+}
+
+/* =========================================================
  * 履歴
  * ========================================================= */
 async function loadHistory() {
@@ -2729,6 +3092,7 @@ async function boot() {
   bindHistory();
   bindPlaylists();
   bindShare();
+  bindExcel();
   bindVoice();
   bindDocs();
   bindDialogs();
