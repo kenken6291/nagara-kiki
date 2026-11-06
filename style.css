@@ -745,3 +745,9 @@ dialog.sheet.wide { width: min(94vw, 620px); }
 }
 #importCount.warn { color: var(--danger); font-weight: 700; }
 #importProgress:empty { display: none; }
+
+/* ---------- AI差し替え ---------- */
+.btn.ai { border-color: #7C8CF2; color: #C9D0FF; }
+.track.is-broken .track-title { color: var(--danger); }
+.track.is-broken .track-sub::after { content: "・代わりが見つかりませんでした"; color: var(--danger); }
+.import-ai { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; }

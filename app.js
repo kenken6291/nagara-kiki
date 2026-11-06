@@ -119,7 +119,9 @@ const state = {
   shOpen: null,         // 開いている「公開されたプレイリスト」のID
   shareEdit: null,      // 公開設定ダイアログの編集中の値 {id, on, to:Set}
   pendingShareId: '',
-  importData: null,     // Excel取り込みの確認中データ   // 共有リンク（?share=）で開かれたプレイリスト
+  importData: null,     // Excel取り込みの確認中データ
+  repairTried: new Set(), // AI差し替えを試した曲（プレイリスト内の曲ID）
+  repairFailed: new Set(), // 代わりが見つからなかった曲（一覧で印を付ける）   // 共有リンク（?share=）で開かれたプレイリスト
   serverVersion: '',
   voice: { on: false, rec: null, base: '', final: '', interim: '', lastAt: 0, startAt: 0, timer: null },
   narration: { audio: null, url: '', speaking: false, volume: null },
@@ -200,6 +202,7 @@ function thumb(videoId) {
 function normTrack(x) {
   const amazon = x.kind === 'amazon' || /^am_/.test(String(x.videoId || ''));
   return {
+    id: String(x.id || ''),
     videoId: String(x.videoId || ''),
     title: String(x.title || ''),
     channel: String(x.channel || ''),
@@ -645,6 +648,7 @@ async function logout() {
     favorites: [], history: [], ai: null, queue: [], order: [], pos: -1, source: '',
     playlists: [], plOpen: null, plLoaded: false, pickItems: [],
     contacts: [], shared: [], sharedLoaded: false, shOpen: null, shareEdit: null,
+    repairTried: new Set(), repairFailed: new Set(),
   });
   $('#aiResult').innerHTML = '';
   $('#screenEmpty').hidden = false;
@@ -762,14 +766,66 @@ function openAmazon(item) {
 function onPlayerError(e) {
   // 2:無効なID 5:HTML5エラー 100:見つからない 101/150:埋め込み不可
   if (isAmazon(currentItem())) return;
-  state.errorStreak++;
   const item = currentItem();
+  // 自分のプレイリストの曲なら、AIで再生できる動画を探して差し替える（1曲につき1回だけ試す）
+  if (item && item.id && state.source.startsWith('pl:') && !state.repairTried.has(item.id)) {
+    state.repairTried.add(item.id);
+    autoRepairCurrent(state.source.slice(3), item);
+    return;
+  }
+  state.errorStreak++;
   if (state.errorStreak >= Math.max(1, state.queue.length)) {
     toast('再生できる曲がありませんでした', 'error');
     return;
   }
   toast(`「${item ? item.title : 'この動画'}」は再生できないため、次の曲へ進みます`, 'error');
   setTimeout(() => next(true, true), 1200);
+}
+
+async function autoRepairCurrent(plId, item) {
+  toast(`「${item.title}」は再生できません。AIで代わりの動画を探しています…`);
+  try {
+    const r = await api('pl_repair', { id: plId, itemIds: [item.id] });
+    applyPlaylists(r);
+    const cur = currentItem();
+    if ((r.replaced || []).length && cur && cur.id === item.id) {
+      toast(`「${item.title}」を再生できる動画に差し替えました`, 'ok');
+      playCurrent();
+      return;
+    }
+    if (cur && cur.id !== item.id) return; // 探している間に別の曲へ移った
+    toast(`「${item.title}」の代わりが見つからなかったため、次の曲へ進みます`, 'error');
+  } catch (err) {
+    toast(`${err.message}（次の曲へ進みます）`, 'error');
+  }
+  state.errorStreak++;
+  if (state.errorStreak >= Math.max(1, state.queue.length)) return;
+  next(true, true);
+}
+
+function markFailed(failed) {
+  failed.forEach(f => state.repairFailed.add(f.itemId));
+  renderPlaylists();
+}
+
+/** プレイリスト内の再生できない曲を、AIで探して差し替える（10曲ずつ繰り返す） */
+async function repairPlaylist(plId, onProgress) {
+  const skip = [];
+  const sum = { replaced: [], failed: [], checked: 0, unplayable: 0 };
+  for (let round = 0; round < 25; round++) {
+    const r = await api('pl_repair', { id: plId, skipIds: skip });
+    applyPlaylists(r);
+    if (round === 0) { sum.checked = r.checked || 0; sum.unplayable = r.unplayable || 0; }
+    const rep = r.replaced || [];
+    const fail = r.failed || [];
+    sum.replaced.push(...rep);
+    sum.failed.push(...fail);
+    fail.forEach(f => skip.push(f.itemId));
+    rep.forEach(x => state.repairTried.add(x.itemId));
+    if (onProgress) onProgress(sum, r.remaining || 0);
+    if (!r.remaining || (!rep.length && !fail.length)) break;
+  }
+  return sum;
 }
 
 function currentItem() {
@@ -899,7 +955,9 @@ function syncQueue(source, list) {
   const cur = currentItem();
   state.queue = list.map(normTrack);
   if (!state.queue.length) { state.order = []; state.pos = -1; updateNowPlaying(); return; }
-  const idx = cur ? state.queue.findIndex(q => q.videoId === cur.videoId) : -1;
+  let idx = cur ? state.queue.findIndex(q => q.videoId === cur.videoId) : -1;
+  // AIで差し替えられた曲は videoId が変わるので、曲のIDで探し直す
+  if (idx < 0 && cur && cur.id) idx = state.queue.findIndex(q => q.id === cur.id);
   if (idx >= 0) {
     buildOrder(idx);
   } else {
@@ -1464,7 +1522,7 @@ function renderPlaylists() {
     return;
   }
   ul.innerHTML = open.items.map((it, i) => `
-    <li class="track ${isCurrent(it.videoId) && state.source === 'pl:' + open.id ? 'is-current' : ''}" data-i="${i}">
+    <li class="track ${isCurrent(it.videoId) && state.source === 'pl:' + open.id ? 'is-current' : ''} ${state.repairFailed.has(it.id) ? 'is-broken' : ''}" data-i="${i}">
       <button type="button" class="track-main" data-act="pi-play" aria-label="${esc(it.title)} を再生">
         ${thumbHtml(it)}
         <span class="track-text">
@@ -1751,6 +1809,27 @@ function bindPlaylists() {
   });
 
   $('#btnPlFromFav').addEventListener('click', openFavPicker);
+
+  $('#btnPlRepair').addEventListener('click', e => {
+    const pl = findPlaylist(state.plOpen);
+    if (!pl) return;
+    const btn = e.currentTarget;
+    const label = btn.textContent;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = '確認しています…';
+    repairPlaylist(pl.id, (sum, remaining) => {
+      btn.textContent = remaining ? `差し替え中…（残り${remaining}曲）` : '仕上げ中…';
+    }).then(sum => {
+      if (!sum.unplayable) toast(`${sum.checked}曲を確認しました。すべて再生できます`, 'ok');
+      else {
+        toast(`再生できない曲${sum.unplayable}曲のうち、${sum.replaced.length}曲を差し替えました` +
+          (sum.failed.length ? `（${sum.failed.length}曲は代わりが見つかりませんでした）` : ''), sum.replaced.length ? 'ok' : 'error');
+      }
+      if (sum.failed.length) markFailed(sum.failed);
+    }).catch(err => toast(err.message, 'error'))
+      .finally(() => { btn.disabled = false; btn.textContent = label; });
+  });
 
   $('#btnPlShareSet').addEventListener('click', () => {
     if (state.plOpen) openShareDialog(state.plOpen);
@@ -2646,7 +2725,7 @@ function xlHelpSheet(X) {
     ['種類', '任意（YouTube／Amazon Music）。URLから自動で判断するので空欄でかまいません。'],
     ['曲名', '任意。空欄なら YouTube は自動で取得します（Amazon Music は取れないことがあります）。'],
     ['チャンネル・アーティスト', '任意。'],
-    ['URL', '必須。YouTube の動画URL、または Amazon Music の曲・アルバム・プレイリストのURL。'],
+    ['URL', 'YouTube の動画URL、または Amazon Music の曲・アルバム・プレイリストのURL。空欄でも「曲名」があれば、AIが YouTube で探して追加します。'],
     [],
     ['記入例（「プレイリスト」シートに、このように書きます）'],
     XL_HEAD,
@@ -2657,6 +2736,7 @@ function xlHelpSheet(X) {
     ['・1つのプレイリストは200曲まで、プレイリストは1人30個までです。'],
     ['・同じ名前のプレイリストがすでにあれば、その後ろに追加します。すでに入っている曲は重複して入りません。'],
     ['・取り込むのは「プレイリスト」シートです（このシートは読み込みません）。'],
+    ['・再生できない動画（削除・非公開・埋め込み不可など）は、取り込み時にAIが曲名で探して、再生できる動画に差し替えます。'],
   ];
   const ws = X.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{ wch: 26 }, { wch: 96 }];
@@ -2691,7 +2771,7 @@ function normPlName(v) {
 function parseXlRows(rows, fallbackName) {
   let h = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
-    if ((rows[i] || []).some(c => /^\s*(url|ｕｒｌ|リンク|link)/i.test(String(c)))) { h = i; break; }
+    if ((rows[i] || []).some(c => /^\s*(url|ｕｒｌ|リンク|link|曲名|タイトル|title)\s*$/i.test(String(c)))) { h = i; break; }
   }
   const col = {};
   if (h >= 0) {
@@ -2716,25 +2796,27 @@ function parseXlRows(rows, fallbackName) {
       const c = r.find(v => URLISH.test(String(v)));
       url = c ? String(c).trim() : '';
     }
-    if (!url) return;
+    const title = cell(r, 'title').slice(0, 200);
+    const channel = cell(r, 'channel').slice(0, 100);
+    if (!url && !title) return;
+
+    let item;
+    if (url && isAmazonInput(url)) {
+      item = { url, kind: 'amazon', title, channel };
+    } else {
+      const vid = url ? extractVideoId(url) : '';
+      if (vid) item = { url: vid, videoId: vid, kind: 'yt', title, channel };
+      else if (title) item = { kind: 'search', title, channel };   // URLが無い・読めない → 曲名でAI検索
+      else { invalid++; return; }
+    }
     let name = normPlName(cell(r, 'name'));
     if (!name) name = last || fallbackName;
     last = name;
 
-    const title = cell(r, 'title').slice(0, 200);
-    const channel = cell(r, 'channel').slice(0, 100);
-    let item;
-    if (isAmazonInput(url)) {
-      item = { url, kind: 'amazon', title, channel };
-    } else {
-      const vid = extractVideoId(url);
-      if (!vid) { invalid++; return; }
-      item = { url: vid, videoId: vid, kind: 'yt', title, channel };
-    }
     const ord = Number(cell(r, 'order'));
     if (!groups.has(name)) groups.set(name, { name, rows: [], keys: new Set() });
     const g = groups.get(name);
-    const key = item.kind === 'yt' ? item.videoId : url;
+    const key = item.kind === 'yt' ? item.videoId : (item.kind === 'search' ? 's:' + title + '|' + channel : url);
     if (g.keys.has(key)) return;
     g.keys.add(key);
     g.rows.push({ item, ord: Number.isFinite(ord) && cell(r, 'order') !== '' ? ord : Infinity, seq });
@@ -2744,6 +2826,9 @@ function parseXlRows(rows, fallbackName) {
     groups: [...groups.values()].map(g => ({
       name: g.name,
       items: g.rows.sort((a, b) => (a.ord - b.ord) || (a.seq - b.seq)).map(x => x.item),
+    })).map(g => Object.assign(g, {
+      search: g.items.filter(it => it.kind === 'search'),
+      items: g.items.filter(it => it.kind !== 'search'),
     })),
   };
 }
@@ -2773,7 +2858,9 @@ function openImportDialog(parsed, fileName) {
     groups: parsed.groups.map(g => Object.assign(g, { selected: true })),
     invalid: parsed.invalid,
     running: false,
+    ai: true,
   };
+  $('#importAi').checked = true;
   $('#importTitle').textContent = `「${fileName}」を取り込む`;
   $('#importProgress').textContent = '';
   renderImportDialog();
@@ -2783,8 +2870,10 @@ function openImportDialog(parsed, fileName) {
 function renderImportDialog() {
   const d = state.importData;
   if (!d) return;
-  const total = d.groups.reduce((n, g) => n + g.items.length, 0);
+  const total = d.groups.reduce((n, g) => n + g.items.length + g.search.length, 0);
+  const searchTotal = d.groups.reduce((n, g) => n + g.search.length, 0);
   $('#importLead').textContent = `${d.groups.length}個のプレイリスト・${total}曲が見つかりました。` +
+    (searchTotal ? `URLの無い${searchTotal}曲は、曲名でAIが探します。` : '') +
     (d.invalid ? `（読み取れないURL ${d.invalid}件は除外）` : '') +
     '取り込むものを選んでください。同じ名前のプレイリストがあれば、その後ろに追加します。';
 
@@ -2793,15 +2882,17 @@ function renderImportDialog() {
     const pl = findPlaylistByName(g.name);
     const room = pl ? state.plMaxItems - pl.items.length : state.plMaxItems;
     if (!pl && g.selected) newNeeded++;
-    const over = g.items.length > room;
+    const n = g.items.length + (d.ai ? g.search.length : 0);
+    const over = n > room;
     const note = pl
       ? `既存（今${pl.items.length}曲）に追加${over ? `・あと${Math.max(0, room)}曲まで` : ''}`
       : `新しく作成${over ? `・${state.plMaxItems}曲まで` : ''}`;
+    const sNote = g.search.length ? `（うちURLなし${g.search.length}曲${d.ai ? 'はAIで検索' : 'は取り込みません'}）` : '';
     return `<li><label class="check-row">
       <input type="checkbox" value="${i}" ${g.selected ? 'checked' : ''} ${d.running ? 'disabled' : ''}>
       <span class="track-text">
         <span class="track-title">${esc(g.name)}</span>
-        <span class="track-sub">${g.items.length}曲・${note}</span>
+        <span class="track-sub">${g.items.length + g.search.length}曲・${note}${sNote}</span>
       </span>
     </label></li>`;
   }).join('');
@@ -2816,6 +2907,7 @@ function renderImportDialog() {
   $('#importAll').textContent = d.groups.every(g => g.selected) ? '選択を解除' : 'すべて選ぶ';
   $('#importAll').hidden = d.running;
   $('#importOk').disabled = d.running || !sel.length || tooMany;
+  $('#importAi').disabled = d.running;
 }
 
 /** サーバーに一度に送る量：最大100曲、タイトル不明のYouTubeは25曲、タイトル不明のAmazonは5件まで */
@@ -2853,18 +2945,21 @@ async function runImport() {
   d.running = true;
   renderImportDialog();
   const progress = $('#importProgress');
-  const sum = { created: 0, appended: 0, added: 0, skipped: 0 };
+  const sum = { created: 0, appended: 0, added: 0, skipped: 0, aiAdded: 0, aiMiss: 0, replaced: 0, notFound: 0 };
   try {
     for (let gi = 0; gi < sel.length; gi++) {
       const g = sel[gi];
+      const head = `${gi + 1}/${sel.length}「${g.name}」`;
       let pl = findPlaylistByName(g.name);
+      if (pl) sum.appended++;
       const room = pl ? state.plMaxItems - pl.items.length : state.plMaxItems;
       const items = g.items.slice(0, Math.max(0, room));
       sum.skipped += g.items.length - items.length;
-      if (!items.length) continue;
+
+      // 1) URLのある曲
       const batches = importBatches(items);
       for (let bi = 0; bi < batches.length; bi++) {
-        progress.textContent = `取り込み中… ${gi + 1}/${sel.length}「${g.name}」（${bi + 1}/${batches.length}）`;
+        progress.textContent = `取り込み中… ${head}（${bi + 1}/${batches.length}）`;
         const payload = batches[bi].map(apiItem);
         let r;
         if (!pl) {
@@ -2876,20 +2971,58 @@ async function runImport() {
           r = await api('pl_add', { id: pl.id, items: payload });
           applyPlaylists(r);
           pl = findPlaylist(pl.id);
-          if (bi === 0 && !r.createdId) sum.appended++;
         }
         sum.added += (r.added || []).length;
         sum.skipped += (r.skipped || []).length;
         if (!pl) break;
       }
+      if (!d.ai) { sum.skipped += g.search.length; continue; }
+
+      // 2) URLの無い曲：曲名でAI検索して追加
+      if (g.search.length) {
+        if (!pl) {
+          const r = await api('pl_create', { name: g.name, items: [] });
+          applyPlaylists(r);
+          pl = findPlaylist(r.createdId);
+          sum.created++;
+        }
+        for (let k = 0; pl && k < g.search.length; k += 10) {
+          const left = state.plMaxItems - pl.items.length;
+          if (left <= 0) { sum.skipped += g.search.length - k; break; }
+          progress.textContent = `AIで曲を探しています… ${head}（${Math.min(k + 10, g.search.length)}/${g.search.length}曲）`;
+          const chunk = g.search.slice(k, k + Math.min(10, left)).map(x => ({ title: x.title, channel: x.channel }));
+          const r = await api('pl_add_search', { id: pl.id, items: chunk });
+          applyPlaylists(r);
+          pl = findPlaylist(pl.id);
+          sum.aiAdded += (r.added || []).length;
+          sum.aiMiss += (r.failed || []).length;
+        }
+      }
+
+      // 3) 再生できない曲をAIで差し替え
+      if (pl && pl.items.some(it => !isAmazon(it))) {
+        progress.textContent = `再生できるか確認しています… ${head}`;
+        const rs = await repairPlaylist(pl.id, (s2, remaining) => {
+          progress.textContent = `再生できない曲を差し替えています… ${head}（済${s2.replaced.length + s2.failed.length}／残り${remaining}曲）`;
+        });
+        sum.replaced += rs.replaced.length;
+        sum.notFound += rs.failed.length;
+        if (rs.failed.length) rs.failed.forEach(f => state.repairFailed.add(f.itemId));
+      }
     }
     const parts = [];
     if (sum.created) parts.push(`新規${sum.created}個`);
     if (sum.appended) parts.push(`追加${sum.appended}個`);
-    toast(`取り込みました（${parts.join('・') || 'プレイリスト0個'}、${sum.added}曲${sum.skipped ? `／重複・上限などで${sum.skipped}曲は除外` : ''}）`, 'ok');
+    const notes = [];
+    if (sum.aiAdded) notes.push(`曲名からAIで${sum.aiAdded}曲追加`);
+    if (sum.replaced) notes.push(`再生できない${sum.replaced}曲を差し替え`);
+    if (sum.aiMiss + sum.notFound) notes.push(`${sum.aiMiss + sum.notFound}曲は見つからず`);
+    if (sum.skipped) notes.push(`重複・上限などで${sum.skipped}曲は除外`);
+    toast(`取り込みました（${parts.join('・') || 'プレイリスト0個'}、${sum.added + sum.aiAdded}曲${notes.length ? '／' + notes.join('、') : ''}）`, 'ok');
+    renderPlaylists();
     closeDialog($('#dlgImport'));
   } catch (e) {
-    progress.textContent = `途中で止まりました：${e.message}（ここまでに${sum.added}曲を取り込み済み）`;
+    progress.textContent = `途中で止まりました：${e.message}（ここまでに${sum.added + sum.aiAdded}曲を取り込み済み）`;
     toast(e.message, 'error');
     refreshPlaylists().catch(() => {});
   } finally {
@@ -2937,7 +3070,7 @@ function bindExcel() {
       if (!state.plLoaded) await refreshPlaylists();
       const parsed = await readImportFile(file);
       if (!parsed.groups.length) {
-        throw new Error('取り込める行が見つかりませんでした。「URL」の列に YouTube または Amazon Music のURLを入れてください（「ひな形をダウンロード」も参考に）');
+        throw new Error('取り込める行が見つかりませんでした。「URL」列に YouTube・Amazon Music のURLを、または「曲名」列に曲名を入れてください（「ひな形をダウンロード」も参考に）');
       }
       openImportDialog(parsed, file.name);
     });
@@ -2955,6 +3088,11 @@ function bindExcel() {
     if (!d) return;
     const on = !d.groups.every(g => g.selected);
     d.groups.forEach(g => { g.selected = on; });
+    renderImportDialog();
+  });
+  $('#importAi').addEventListener('change', e => {
+    if (!state.importData) return;
+    state.importData.ai = e.target.checked;
     renderImportDialog();
   });
   $('#formImport').addEventListener('submit', e => {

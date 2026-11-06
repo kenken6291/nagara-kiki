@@ -182,6 +182,7 @@
         <button type="button" class="btn small" id="btnPlPlay">最初から再生</button>
         <button type="button" class="btn small" id="btnPlShuffle">シャッフル再生</button>
         <button type="button" class="btn small" id="btnPlFromFav">お気に入りから追加</button>
+        <button type="button" class="btn small ai" id="btnPlRepair" title="削除・非公開・埋め込み不可の動画を、曲名でAIが探して差し替えます">再生できない曲をAIで差し替え</button>
       </div>
       <ul class="list" id="plItems"></ul>
       <div class="pl-manage">
@@ -481,6 +482,13 @@
     <div class="sheet-body">
       <ul class="check-list" id="importList"></ul>
     </div>
+    <label class="agree-row import-ai">
+      <input type="checkbox" id="importAi" checked>
+      <span class="agree-text">
+        <span class="agree-label">再生できない曲・URLの無い曲は、AIが曲名でYouTubeから探す</span>
+        <span class="agree-short">削除・非公開・埋め込み不可の動画を、再生できる動画に差し替えます。1曲数秒かかります（6時間で80曲まで）。</span>
+      </span>
+    </label>
     <p class="hint" id="importProgress" aria-live="polite"></p>
     <div class="sheet-foot">
       <button type="button" class="btn" data-close>閉じる</button>
@@ -561,7 +569,11 @@
 
       <h3>Excelで書き出す・取り込む</h3>
       <p>「プレイリスト」一覧の下にある「Excel」から、すべてのプレイリストを1つのExcelファイルに書き出せます。1つだけなら、プレイリストを開いて「Excelに書き出す」。</p>
+      <p>取り込むときに再生できない動画（削除・非公開・埋め込み不可など）があれば、AIが曲名でYouTubeを探して、再生できる動画に差し替えます。URLが空欄でも「曲名」があれば、AIが探して追加します。</p>
       <p>取り込むときは、列に「プレイリスト名」「曲名」「URL」があれば読み込めます（書き出したファイルや「ひな形」をそのまま編集するのが簡単です）。同じ名前のプレイリストがあれば後ろに追加し、無ければ新しく作ります。すでに入っている曲は重複して入りません。</p>
+
+      <h3>再生できない曲の差し替え</h3>
+      <p>自分のプレイリストで再生できない曲に当たると、AIが代わりの動画を探して差し替え、そのまま再生します。まとめて直すときは、プレイリストを開いて「再生できない曲をAIで差し替え」を押してください。曲名はそのまま残ります。代わりが見つからなかった曲には印が付きます。</p>
 
       <h3>4. 家族・友人だけに公開する</h3>
       <ol>

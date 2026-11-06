@@ -15,7 +15,7 @@
  * Code.gs を修正したら「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→ デプロイ。
  */
 
-const SERVER_VERSION = '1.9.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
+const SERVER_VERSION = '1.10.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
 const TERMS_VERSION = '2026-11-07';  // 注意事項・免責事項の版（app.js の TERMS_VERSION と同じにする）
 
 const APP_NAME = 'ながら聴き';
@@ -38,7 +38,10 @@ const CONTACTS_MAX = 50;            // 公開相手（家族・友人）の登�
 const CONTACT_RELATIONS = ['家族', '友人', 'その他'];
 const TTS_LIMIT_PER_6H = 30;        // DJ紹介（音声合成）の回数上限
 const NARRATION_MAX = 400;          // 読み上げる文字数の上限
-const AMAZON_META_FETCH_MAX = 5;    // タイトル自動取得を試みるAmazonのURL数（1回あたり）
+const AMAZON_META_FETCH_MAX = 5;
+const REPAIR_BATCH = 10;            // AIで探して差し替える曲数（1回の呼び出しあたり）
+const REPAIR_LIMIT_PER_6H = 80;     // AI検索の回数上限（1人6時間あたり。YouTube検索1回=100ユニット）
+const REPAIR_CANDIDATES = 5;        // 1曲あたりの検索候補数    // タイトル自動取得を試みるAmazonのURL数（1回あたり）
 
 const PW_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -77,7 +80,8 @@ const SHEETS = {
 const WRITE_ACTIONS = ['register', 'login', 'set_password', 'forgot_password', 'reset_password', 'logout',
   'save_favorite', 'import_playlist', 'delete_favorite', 'reorder_favorites', 'add_history',
   'pl_create', 'pl_rename', 'pl_delete', 'pl_add', 'pl_import', 'pl_remove', 'pl_reorder', 'pl_order',
-  'agree_terms', 'pl_share_set', 'contact_add', 'contact_update', 'contact_delete'];
+  'agree_terms', 'pl_share_set', 'contact_add', 'contact_update', 'contact_delete',
+  'pl_repair', 'pl_add_search'];
 
 /* =========================================================
  * 初期化
@@ -144,6 +148,8 @@ function doPost(e) {
     pl_remove: apiPlRemove_,
     pl_reorder: apiPlReorder_,
     pl_order: apiPlOrder_,
+    pl_repair: apiPlRepair_,
+    pl_add_search: apiPlAddSearch_,
     pl_share_set: apiPlShareSet_,
     contact_add: apiContactAdd_,
     contact_update: apiContactUpdate_,
@@ -1258,6 +1264,258 @@ function cleanNarration_(s) {
 }
 
 /* =========================================================
+ * 再生できない曲を AI で探して差し替える
+ *   1) YouTube Data API で再生可否を確認（削除・非公開・埋め込み不可・日本で再生不可）
+ *   2) Gemini が曲名・アーティストから検索語を作る
+ *   3) YouTube 検索で候補を集め、再生できるものだけ残す
+ *   4) Gemini が「同じ曲の公式音源・公式MV」に最も近い候補を選ぶ（合うものが無ければ差し替えない）
+ * ========================================================= */
+function apiPlRepair_(req) {
+  const user = auth_(req);
+  const list = findMyPlaylist_(user.email, req.id);
+  const key = ytKey_();
+  const all = plItemsOf_(user.email, list.id);
+  let rows = all.filter(r => String(r.kind) !== 'amazon');
+  const only = idSet_(req.itemIds);
+  const skip = idSet_(req.skipIds);
+  if (Object.keys(only).length) rows = rows.filter(r => only[String(r.id)]);
+  rows = rows.filter(r => !skip[String(r.id)]);
+
+  const info = fetchVideoInfo_(rows.map(r => String(r.video_id)), key);
+  const bad = rows.filter(r => !playable_(info[String(r.video_id)]));
+  const batch = bad.slice(0, REPAIR_BATCH);
+  const replaced = [];
+  const failed = [];
+  if (batch.length) {
+    useRepairQuota_(user.email, batch.length);
+    const have = {};
+    all.forEach(r => { have[String(r.video_id)] = true; });
+    const found = aiFindVideos_(batch.map(r => ({
+      title: String(r.title || ''), channel: String(r.channel || ''), exclude: String(r.video_id),
+    })), key);
+    batch.forEach((r, i) => {
+      const f = found[i];
+      const oldId = String(r.video_id);
+      const reason = unplayableReason_(info[oldId]);
+      if (!f || have[f.videoId]) {
+        failed.push({ itemId: String(r.id), title: String(r.title), reason: reason });
+        return;
+      }
+      have[f.videoId] = true;
+      const keepTitle = String(r.title || '') && String(r.title) !== oldId;
+      updateRow_('PLAYLIST_ITEMS', r._row, {
+        video_id: f.videoId,
+        title: keepTitle ? String(r.title) : f.title.slice(0, 200),
+        channel: f.channel.slice(0, 100),
+        kind: 'yt', url: '', embed: '', thumb: '',
+      });
+      replaced.push({ itemId: String(r.id), title: keepTitle ? String(r.title) : f.title, oldVideoId: oldId, newVideoId: f.videoId, newTitle: f.title, reason: reason });
+    });
+    updateRow_('PLAYLISTS', list._row, { updated_at: new Date() });
+  }
+  return plResult_(user.email, {
+    checked: rows.length,
+    unplayable: bad.length,
+    replaced: replaced,
+    failed: failed,
+    remaining: bad.length - batch.length,
+  });
+}
+
+/** URL が無い曲（曲名だけ）を AI で探してプレイリストに追加 */
+function apiPlAddSearch_(req) {
+  const user = auth_(req);
+  const list = findMyPlaylist_(user.email, req.id);
+  const key = ytKey_();
+  const inputs = (Array.isArray(req.items) ? req.items : [])
+    .map(it => ({ title: String(it.title || '').trim().slice(0, 200), channel: String(it.channel || '').trim().slice(0, 100) }))
+    .filter(it => it.title);
+  if (!inputs.length) fail_('探す曲名がありません');
+  if (inputs.length > REPAIR_BATCH) fail_('一度に探せるのは' + REPAIR_BATCH + '曲までです');
+
+  const have = {};
+  plItemsOf_(user.email, list.id).forEach(r => { have[String(r.video_id)] = true; });
+  let room = MY_PLAYLIST_ITEMS_MAX - Object.keys(have).length;
+  if (room <= 0) fail_('1つのプレイリストは' + MY_PLAYLIST_ITEMS_MAX + '曲までです');
+  const targets = inputs.slice(0, room);
+  useRepairQuota_(user.email, targets.length);
+
+  const found = aiFindVideos_(targets.map(t => ({ title: t.title, channel: t.channel, exclude: '' })), key);
+  const toAdd = [];
+  const failed = [];
+  targets.forEach((t, i) => {
+    const f = found[i];
+    if (!f) { failed.push({ title: t.title, reason: '見つかりませんでした' }); return; }
+    if (have[f.videoId]) { failed.push({ title: t.title, reason: 'すでにこのプレイリストに入っています' }); return; }
+    have[f.videoId] = true;
+    toAdd.push({ key: f.videoId, kind: 'yt', title: t.title, channel: t.channel || f.channel });
+  });
+  inputs.slice(targets.length).forEach(t => failed.push({ title: t.title, reason: '1つのプレイリストは' + MY_PLAYLIST_ITEMS_MAX + '曲までです' }));
+  const added = appendPlItems_(user.email, list.id, toAdd);
+  if (added.length) updateRow_('PLAYLISTS', list._row, { updated_at: new Date() });
+  return plResult_(user.email, { added: added, failed: failed });
+}
+
+function aiFindVideos_(targets, key) {
+  if (!targets.length) return [];
+  // 1) 検索語（AIが使えなければ「曲名 チャンネル」）
+  const queries = targets.map(t => cleanQuery_(t.title + ' ' + cleanChannel_(t.channel)));
+  try {
+    const p1 = [
+      'YouTubeで音楽を探すための検索語を作ってください。',
+      '各曲について、タイトルやチャンネル名から「【MV】」「Official Video」「歌詞付き」「高音質」などの飾りを取り除き、',
+      '「曲名 アーティスト名」の形の検索語を1つ作ります。アーティストが分からなければ曲名だけでかまいません。',
+      '曲名から推測できる場合は、正しい表記の曲名・アーティスト名に直してください。存在しない情報は作らないこと。',
+      '',
+      '曲の一覧（JSON）：',
+      JSON.stringify(targets.map((t, i) => ({ i: i, title: t.title, channel: t.channel }))),
+      '',
+      '次のJSON形式だけを出力：{"items":[{"i":0,"query":"検索語"}]}',
+    ].join('\n');
+    const d1 = geminiJson_(p1, 0.2);
+    (d1.items || []).forEach(it => {
+      const i = Number(it.i);
+      if (i >= 0 && i < queries.length && it.query) queries[i] = cleanQuery_(it.query);
+    });
+  } catch (e) {
+    console.warn('aiFindVideos_ query', e && e.message);
+  }
+
+  // 2) YouTube 検索
+  const cand = ytSearchCandidates_(queries, key, REPAIR_CANDIDATES);
+  const ids = [];
+  cand.forEach(l => l.forEach(id => { if (ids.indexOf(id) === -1) ids.push(id); }));
+  const info = fetchVideoInfo_(ids, key);
+  const lists = cand.map((l, i) => l
+    .filter(id => id !== targets[i].exclude && playable_(info[id]))
+    .map(id => ({ id: id, title: info[id].title, channel: info[id].channel, sec: info[id].sec })));
+
+  // 3) AI が候補から選ぶ（使えなければ1番目）
+  const picks = lists.map(l => (l.length ? 0 : -1));
+  if (lists.some(l => l.length)) {
+    try {
+      const p2 = [
+        '元の曲と同じ曲の動画を、候補の中から1つ選んでください。',
+        '優先順：公式チャンネルの音源・公式MV ＞ レコード会社やトピック（- Topic）の音源 ＞ それ以外。',
+        '歌ってみた・カバー・カラオケ・演奏してみた・リアクション・切り抜き・短すぎる動画（60秒未満）は、元の曲がそれらでない限り選ばない。',
+        '同じ曲が見当たらない場合は pick に -1 を入れる（似た別の曲は選ばない）。',
+        '',
+        '一覧（JSON）：',
+        JSON.stringify(lists.map((l, i) => ({
+          i: i,
+          original: { title: targets[i].title, channel: targets[i].channel },
+          candidates: l.map((c, k) => ({ k: k, title: c.title, channel: c.channel, seconds: c.sec })),
+        })).filter(x => x.candidates.length)),
+        '',
+        '次のJSON形式だけを出力：{"items":[{"i":0,"pick":0}]}',
+      ].join('\n');
+      const d2 = geminiJson_(p2, 0);
+      (d2.items || []).forEach(it => {
+        const i = Number(it.i);
+        const k = Number(it.pick);
+        if (i >= 0 && i < lists.length) picks[i] = (k >= 0 && k < lists[i].length) ? k : -1;
+      });
+    } catch (e) {
+      console.warn('aiFindVideos_ pick', e && e.message);
+    }
+  }
+  return lists.map((l, i) => (picks[i] >= 0 ? {
+    videoId: l[picks[i]].id, title: l[picks[i]].title, channel: l[picks[i]].channel, query: queries[i],
+  } : null));
+}
+
+/** 検索：候補の動画IDを最大 n 件（6時間キャッシュ） */
+function ytSearchCandidates_(queries, key, n) {
+  const cache = CacheService.getScriptCache();
+  const out = queries.map(() => []);
+  const reqs = [];
+  const idx = [];
+  queries.forEach((q, i) => {
+    if (!q) return;
+    const c = cache.get(cacheKey_('yc' + n, q));
+    if (c) { out[i] = JSON.parse(c); return; }
+    reqs.push({
+      url: 'https://www.googleapis.com/youtube/v3/search?part=id&type=video&videoEmbeddable=true&videoSyndicated=true' +
+        '&maxResults=' + n + '&regionCode=JP&relevanceLanguage=ja' +
+        '&q=' + encodeURIComponent(q) + '&key=' + encodeURIComponent(key),
+      muteHttpExceptions: true,
+    });
+    idx.push(i);
+  });
+  if (reqs.length) {
+    UrlFetchApp.fetchAll(reqs).forEach((r, k) => {
+      const i = idx[k];
+      if (r.getResponseCode() !== 200) {
+        console.warn('YouTube search', r.getContentText());
+        if (r.getResponseCode() === 403) fail_('YouTube APIの1日の利用上限に達したか、APIキーの設定に問題があります。明日以降にお試しください');
+        return;
+      }
+      const ids = (JSON.parse(r.getContentText()).items || [])
+        .map(it => it.id && it.id.videoId).filter(Boolean);
+      out[i] = ids;
+      cache.put(cacheKey_('yc' + n, queries[i]), JSON.stringify(ids), 21600);
+    });
+  }
+  return out;
+}
+
+function playable_(v) {
+  return !unplayableReason_(v);
+}
+
+function unplayableReason_(v) {
+  if (!v) return '削除または非公開';
+  if (v.privacyStatus === 'private') return '非公開';
+  if (v.uploadStatus && ['processed', 'uploaded'].indexOf(v.uploadStatus) === -1) return '削除または処理中';
+  if (!v.embeddable) return '埋め込み不可';
+  const rr = v.region;
+  if (rr && ((rr.blocked && rr.blocked.indexOf('JP') !== -1) || (rr.allowed && rr.allowed.indexOf('JP') === -1))) {
+    return '日本では再生不可';
+  }
+  return '';
+}
+
+function ytKey_() {
+  const key = props_().getProperty('YOUTUBE_API_KEY');
+  if (!key) fail_('この機能には YOUTUBE_API_KEY の設定が必要です（管理者向け）');
+  return key;
+}
+
+function useRepairQuota_(email, n) {
+  const cache = CacheService.getScriptCache();
+  const rk = cacheKey_('repair', email);
+  const used = Number(cache.get(rk) || 0);
+  if (used + n > REPAIR_LIMIT_PER_6H) {
+    fail_('AIでの曲探しの利用回数が上限に達しました（6時間で' + REPAIR_LIMIT_PER_6H + '曲まで）。時間をおいてお試しください');
+  }
+  cache.put(rk, String(used + n), 21600);
+}
+
+function idSet_(a) {
+  const o = {};
+  (Array.isArray(a) ? a : []).forEach(v => { o[String(v)] = true; });
+  return o;
+}
+
+function cleanQuery_(q) {
+  return String(q || '')
+    .replace(/[【\[（(][^】\]）)]{0,30}(MV|PV|Official|公式|歌詞|lyric|高音質|HD|4K|フル|Full)[^】\]）)]{0,30}[】\]）)]/gi, ' ')
+    .replace(/\b(official\s*(music\s*)?video|music\s*video|lyric\s*video|audio)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function cleanChannel_(c) {
+  const s = String(c || '').replace(/\s*-\s*Topic$/i, '').trim();
+  return /^(amazon music|youtube|vevo)$/i.test(s) ? '' : s.replace(/VEVO$/i, '');
+}
+
+function isoSec_(d) {
+  const m = String(d || '').match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m) return 0;
+  return (Number(m[1] || 0) * 86400) + (Number(m[2] || 0) * 3600) + (Number(m[3] || 0) * 60) + Number(m[4] || 0);
+}
+
+/* =========================================================
  * Gemini 選曲アシスタント
  * ========================================================= */
 function apiGeminiRecommend_(req) {
@@ -1317,7 +1575,7 @@ function apiGeminiRecommend_(req) {
   };
 }
 
-function geminiJson_(prompt) {
+function geminiJson_(prompt, temperature) {
   const key = props_().getProperty('GEMINI_API_KEY');
   if (!key) fail_('AI選曲の準備ができていません（管理者：GEMINI_API_KEY を設定してください）');
   const model = props_().getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
@@ -1329,7 +1587,7 @@ function geminiJson_(prompt) {
     muteHttpExceptions: true,
     payload: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.9 },
+      generationConfig: { responseMimeType: 'application/json', temperature: temperature === undefined ? 0.9 : temperature },
     }),
   });
   const code = res.getResponseCode();
@@ -1407,10 +1665,11 @@ function fetchPlaylistVideoIds_(listId, key) {
 
 /** videos.list で タイトル・チャンネル・埋め込み可否を取得（50件ずつ） */
 function fetchVideoInfo_(ids, key) {
+  if (!ids.length) return {};
   const reqs = [];
   for (let i = 0; i < ids.length; i += 50) {
     reqs.push({
-      url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,status&maxResults=50' +
+      url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,status,contentDetails&maxResults=50' +
         '&id=' + ids.slice(i, i + 50).join(',') + '&key=' + encodeURIComponent(key),
       muteHttpExceptions: true,
     });
@@ -1424,6 +1683,9 @@ function fetchVideoInfo_(ids, key) {
         channel: decodeEntities_(v.snippet.channelTitle),
         embeddable: !!(v.status && v.status.embeddable),
         privacyStatus: v.status ? v.status.privacyStatus : '',
+        uploadStatus: v.status ? v.status.uploadStatus : '',
+        sec: isoSec_(v.contentDetails && v.contentDetails.duration),
+        region: (v.contentDetails && v.contentDetails.regionRestriction) || null,
       };
     });
   });
