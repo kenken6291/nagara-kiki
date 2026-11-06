@@ -639,6 +639,7 @@ function bindAuth() {
 
 async function logout() {
   $('#accountMenu').open = false;
+  if (isFull()) exitFull();
   try { await api('logout'); } catch (e) { /* 失敗してもローカルは消す */ }
   clearSession();
   if (state.playerReady) state.player.stopVideo();
@@ -1055,6 +1056,95 @@ function bindPlayer() {
       navigator.mediaSession.setActionHandler('previoustrack', prev);
     } catch (e) { /* 非対応 */ }
   }
+}
+
+/* =========================================================
+ * 全画面表示（プレイヤーと操作ボタンを画面いっぱいに）
+ *   Fullscreen API が使えない端末（iPhone など）は、CSSで画面いっぱいに広げる
+ * ========================================================= */
+function fsElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function isFull() {
+  const deck = $('#deck');
+  return fsElement() === deck || deck.classList.contains('pseudo-full');
+}
+
+async function enterFull() {
+  const deck = $('#deck');
+  const req = deck.requestFullscreen || deck.webkitRequestFullscreen;
+  let ok = false;
+  if (req) {
+    try {
+      await req.call(deck, { navigationUI: 'hide' });
+      ok = true;
+    } catch (e) { /* 使えない場合は下の方法で */ }
+  }
+  if (!ok) {
+    deck.classList.add('pseudo-full');
+    document.body.classList.add('no-scroll');
+  }
+  // 横向きにできる端末は横向きに（できなくても問題なし）
+  try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); } catch (e) { /* noop */ }
+  updateFull();
+}
+
+function exitFull() {
+  const deck = $('#deck');
+  if (fsElement()) {
+    const ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (ex) { try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch (e) { /* noop */ } }
+  }
+  deck.classList.remove('pseudo-full');
+  document.body.classList.remove('no-scroll');
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) { /* noop */ }
+  setPanel(true);
+  updateFull();
+}
+
+function toggleFull() {
+  if (isFull()) exitFull(); else enterFull();
+}
+
+function setPanel(show) {
+  const deck = $('#deck');
+  deck.classList.toggle('video-only', !show);
+  $('#btnPanel').setAttribute('aria-pressed', String(!show));
+  $('#btnPanelShow').hidden = show || !isFull();
+}
+
+function updateFull() {
+  const full = isFull();
+  const deck = $('#deck');
+  deck.classList.toggle('is-full', full);
+  if (!full) deck.classList.remove('video-only');
+  $('#btnFull').setAttribute('aria-label', full ? '全画面を終わる' : '全画面で表示');
+  $('#btnPanelShow').hidden = !full || !deck.classList.contains('video-only');
+}
+
+function bindFull() {
+  $('#btnFull').addEventListener('click', toggleFull);
+  $('#btnFullExit').addEventListener('click', exitFull);
+  $('#btnPanel').addEventListener('click', () => setPanel(false));
+  $('#btnPanelShow').addEventListener('click', () => setPanel(true));
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach(ev => document.addEventListener(ev, () => {
+    // Esc キーなどでブラウザ側の全画面が終わったとき
+    if (!fsElement() && !$('#deck').classList.contains('pseudo-full')) {
+      setPanel(true);
+      try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) { /* noop */ }
+    }
+    updateFull();
+  }));
+  document.addEventListener('keydown', e => {
+    if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+    if (document.querySelector('dialog[open]') || !$('#authModal').hidden || $('#app').hidden) return;
+    if (e.key === 'Escape' && $('#deck').classList.contains('pseudo-full')) { exitFull(); return; }
+    if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      toggleFull();
+    }
+  });
 }
 
 /* =========================================================
@@ -3209,7 +3299,9 @@ function showVersion() {
   let t = `ver ${CONFIG.APP_VERSION}` + (CONFIG.APP_UPDATED ? `（${CONFIG.APP_UPDATED} 更新）` : '');
   if (state.serverVersion) t += `／サーバー ${state.serverVersion}`;
   el.textContent = t;
-  el.classList.toggle('mismatch', !!state.serverVersion && state.serverVersion !== CONFIG.APP_VERSION);
+  // 「1.10.x」の最後の数字（画面だけの修正）は比べない
+  const mm = v => String(v).split('.').slice(0, 2).join('.');
+  el.classList.toggle('mismatch', !!state.serverVersion && mm(state.serverVersion) !== mm(CONFIG.APP_VERSION));
   el.title = el.classList.contains('mismatch')
     ? '画面とサーバー（GAS）のバージョンが違います。GASを「新バージョン」でデプロイしたか確認してください'
     : '';
@@ -3225,6 +3317,7 @@ async function boot() {
   showVersion();
   bindAuth();
   bindPlayer();
+  bindFull();
   bindFavorites();
   bindAi();
   bindHistory();

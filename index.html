@@ -54,7 +54,11 @@
 
 <main id="app" hidden>
   <!-- プレイヤー -->
-  <section class="deck" aria-label="プレイヤー">
+  <section class="deck" id="deck" aria-label="プレイヤー">
+    <div class="full-bar">
+      <button type="button" class="btn small" id="btnPanel" aria-pressed="false">映像だけにする</button>
+      <button type="button" class="btn small" id="btnFullExit">✕ 全画面を終わる</button>
+    </div>
     <div class="screen">
       <div id="ytPlayer"></div>
       <p class="screen-empty" id="screenEmpty">お気に入りから曲を選ぶと、ここで再生が始まります</p>
@@ -76,7 +80,13 @@
         <p class="now-title" id="nowTitle">再生していません</p>
         <p class="now-sub" id="nowSub"></p>
       </div>
-      <button type="button" class="btn small now-add" id="btnNowToPl" hidden>＋ リストへ</button>
+      <div class="now-btns">
+        <button type="button" class="btn small now-add" id="btnNowToPl" hidden>＋ リストへ</button>
+        <button type="button" class="btn small" id="btnFull" aria-label="全画面で表示">
+          <svg class="i-full" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          全画面
+        </button>
+      </div>
     </div>
 
     <div class="dial">
@@ -113,6 +123,7 @@
       </button>
     </div>
     <p class="queue-info" id="queueInfo"></p>
+    <button type="button" class="panel-show" id="btnPanelShow" hidden>操作を表示</button>
   </section>
 
   <!-- タブ -->
@@ -563,6 +574,9 @@
       <h3>2. 流しっぱなしで聴く</h3>
       <p>曲を押すとその曲から順に再生し、終わると自動で次へ進みます。シャッフル・リピート（全曲／1曲／なし）は下のボタンで切り替えます。</p>
       <p>Amazon Music の曲は、Amazon側の仕組みで自動では次へ進みません。「Amazon Musicで開く」で聴き、終わったら「次へ」を押してください（Amazon Music の会員登録やログインが必要な場合があります）。</p>
+
+      <h3>全画面で見る</h3>
+      <p>曲名の右の「全画面」を押すと、映像と操作ボタンを画面いっぱいに表示します。「映像だけにする」で操作ボタンを隠し、右下の「操作を表示」で戻します。終わるときは「✕ 全画面を終わる」（パソコンは Esc キーでも可）。キーボードの F キーでも切り替えられます。スマホは横向きにすると大きく見られます。</p>
 
       <h3>3. プレイリスト（1人30個まで）</h3>
       <p>「プレイリスト」→「＋ 新しいプレイリスト」で作成します。1つに200曲まで入ります。「並べ替え」で一覧の順番を変えられます。</p>
