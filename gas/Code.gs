@@ -4,13 +4,19 @@
  * スクリプトプロパティ（プロジェクトの設定 → スクリプト プロパティ）
  *   GEMINI_API_KEY   : 必須。Gemini API キー
  *   GEMINI_MODEL     : 任意。既定 gemini-2.5-flash
+ *   GEMINI_TTS_MODEL : 任意。DJ紹介の音声合成モデル。既定 gemini-2.5-flash-preview-tts
+ *   GEMINI_TTS_VOICE : 任意。DJ紹介の声。既定 Aoede
  *   YOUTUBE_API_KEY  : 任意。YouTube Data API v3 キー（AI選曲の曲を実際の動画に変換する）
  *   APP_URL          : 任意。GitHub Pages のURL（メール本文に記載）
  *   SPREADSHEET_ID   : 任意。スプレッドシートにバインドしない場合のみ指定
  *   PEPPER           : setup() が自動生成（変更しないこと）
  *
  * 初回は setup() を実行してください。
+ * Code.gs を修正したら「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→ デプロイ。
  */
+
+const SERVER_VERSION = '1.8.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
+const TERMS_VERSION = '2026-11-07';  // 注意事項・免責事項の版（app.js の TERMS_VERSION と同じにする）
 
 const APP_NAME = 'ながら聴き';
 const SESSION_DAYS = 14;
@@ -25,9 +31,14 @@ const RECOMMEND_COUNT = 8;
 const RECOMMEND_LIMIT_PER_6H = 15;
 const MAX_BULK_ADD = 30;
 const PLAYLIST_MAX = 200;          // YouTubeプレイリストの読み込み上限
-const MY_PLAYLISTS_MAX = 10;        // マイプレイリスト：1人あたりの個数
+const MY_PLAYLISTS_MAX = 30;        // マイプレイリスト：1人あたりの個数
 const MY_PLAYLIST_ITEMS_MAX = 200;  // マイプレイリスト：1つあたりの曲数
 const PL_NAME_MAX = 30;
+const CONTACTS_MAX = 50;            // 公開相手（家族・友人）の登録上限
+const CONTACT_RELATIONS = ['家族', '友人', 'その他'];
+const TTS_LIMIT_PER_6H = 30;        // DJ紹介（音声合成）の回数上限
+const NARRATION_MAX = 400;          // 読み上げる文字数の上限
+const AMAZON_META_FETCH_MAX = 5;    // タイトル自動取得を試みるAmazonのURL数（1回あたり）
 
 const PW_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -36,24 +47,37 @@ const SHEETS = {
   USERS: {
     name: 'Users',
     headers: ['email', 'nickname', 'hash_password', 'salt', 'status', 'temp_token', 'temp_expires',
-      'fail_count', 'locked_until', 'created_at', 'updated_at'],
+      'fail_count', 'locked_until', 'created_at', 'updated_at', 'agreed_at', 'terms_version'],
   },
   SESSIONS: { name: 'Sessions', headers: ['token', 'email', 'expires_at', 'created_at'] },
   FAVORITES: {
     name: 'Favorites',
-    headers: ['id', 'email', 'video_id', 'title', 'channel', 'sort_order', 'created_at'],
+    headers: ['id', 'email', 'video_id', 'title', 'channel', 'sort_order', 'created_at',
+      'kind', 'url', 'embed', 'thumb'],
   },
-  HISTORY: { name: 'History', headers: ['email', 'video_id', 'title', 'played_at'] },
-  PLAYLISTS: { name: 'Playlists', headers: ['id', 'email', 'name', 'created_at', 'updated_at', 'sort_order'] },
+  HISTORY: {
+    name: 'History',
+    headers: ['email', 'video_id', 'title', 'played_at', 'kind', 'url', 'embed', 'thumb'],
+  },
+  PLAYLISTS: {
+    name: 'Playlists',
+    headers: ['id', 'email', 'name', 'created_at', 'updated_at', 'sort_order', 'share_on', 'share_to'],
+  },
   PLAYLIST_ITEMS: {
     name: 'PlaylistItems',
-    headers: ['id', 'playlist_id', 'email', 'video_id', 'title', 'channel', 'sort_order', 'created_at'],
+    headers: ['id', 'playlist_id', 'email', 'video_id', 'title', 'channel', 'sort_order', 'created_at',
+      'kind', 'url', 'embed', 'thumb'],
+  },
+  CONTACTS: {
+    name: 'Contacts',
+    headers: ['owner_email', 'member_email', 'label', 'relation', 'created_at'],
   },
 };
 
 const WRITE_ACTIONS = ['register', 'login', 'set_password', 'forgot_password', 'reset_password', 'logout',
   'save_favorite', 'import_playlist', 'delete_favorite', 'reorder_favorites', 'add_history',
-  'pl_create', 'pl_rename', 'pl_delete', 'pl_add', 'pl_import', 'pl_remove', 'pl_reorder', 'pl_order'];
+  'pl_create', 'pl_rename', 'pl_delete', 'pl_add', 'pl_import', 'pl_remove', 'pl_reorder', 'pl_order',
+  'agree_terms', 'pl_share_set', 'contact_add', 'contact_update', 'contact_delete'];
 
 /* =========================================================
  * 初期化
@@ -84,7 +108,7 @@ function setup() {
  * エンドポイント
  * ========================================================= */
 function doGet() {
-  return json_({ ok: true, app: APP_NAME, message: 'API is running' });
+  return json_({ ok: true, app: APP_NAME, version: SERVER_VERSION, message: 'API is running' });
 }
 
 function doPost(e) {
@@ -120,10 +144,18 @@ function doPost(e) {
     pl_remove: apiPlRemove_,
     pl_reorder: apiPlReorder_,
     pl_order: apiPlOrder_,
+    pl_share_set: apiPlShareSet_,
+    contact_add: apiContactAdd_,
+    contact_update: apiContactUpdate_,
+    contact_delete: apiContactDelete_,
+    shared_list: apiSharedList_,
+    shared_get: apiSharedGet_,
+    agree_terms: apiAgreeTerms_,
+    tts: apiTts_,
   };
 
   const fn = routes[req.action];
-  if (!fn) return json_({ ok: false, error: '不明な操作です: ' + req.action });
+  if (!fn) return json_({ ok: false, error: '不明な操作です: ' + req.action, serverVersion: SERVER_VERSION });
 
   const needsLock = WRITE_ACTIONS.indexOf(req.action) !== -1;
   const lock = LockService.getScriptLock();
@@ -150,6 +182,9 @@ function apiRegister_(req) {
   const nickname = String(req.nickname || '').trim().slice(0, 20);
   if (!isEmail_(email)) fail_('メールアドレスの形式が正しくありません');
   if (!nickname) fail_('ニックネームを入力してください');
+  if (req.agree !== true || String(req.termsVersion || '') !== TERMS_VERSION) {
+    fail_('注意書き・免責事項・自己責任・当事者間での問題解決のすべてに同意してください（画面を再読み込みしてからお試しください）');
+  }
 
   const user = findUser_(email);
   if (user && user.status === 'active') {
@@ -169,6 +204,8 @@ function apiRegister_(req) {
     fail_count: 0,
     locked_until: '',
     updated_at: new Date(),
+    agreed_at: new Date(),
+    terms_version: TERMS_VERSION,
   };
   if (user) updateRow_('USERS', user._row, data);
   else appendObj_('USERS', Object.assign(data, { created_at: new Date() }));
@@ -226,6 +263,7 @@ function apiLogin_(req) {
     expiresAt: session.expiresAt,
     user: publicUser_(user),
     mustChangePassword: user.status === 'temp',
+    serverVersion: SERVER_VERSION,
   };
 }
 
@@ -329,7 +367,19 @@ function apiLogout_(req) {
 
 function apiVerifySession_(req) {
   const user = auth_(req, true);
-  return { ok: true, user: publicUser_(user) };
+  return { ok: true, user: publicUser_(user), serverVersion: SERVER_VERSION };
+}
+
+/** 既存会員が新しい注意事項・免責事項に同意する */
+function apiAgreeTerms_(req) {
+  const user = auth_(req, true);
+  if (req.agree !== true || String(req.termsVersion || '') !== TERMS_VERSION) {
+    fail_('すべての項目に同意してください（画面を再読み込みしてからお試しください）');
+  }
+  updateRow_('USERS', user._row, { agreed_at: new Date(), terms_version: TERMS_VERSION });
+  const u = publicUser_(user);
+  u.agreed = true;
+  return { ok: true, user: u };
 }
 
 /* =========================================================
@@ -344,34 +394,18 @@ function apiSaveFavorite_(req) {
   const user = auth_(req);
   const inputs = Array.isArray(req.items)
     ? req.items
-    : [{ url: req.url || req.videoId, title: req.title, channel: req.channel }];
-  if (!inputs.length) fail_('追加する動画がありません');
+    : [{ url: req.url || req.videoId, title: req.title, channel: req.channel, kind: req.kind }];
+  if (!inputs.length) fail_('追加する曲がありません');
   if (inputs.length > MAX_BULK_ADD) fail_('一度に追加できるのは' + MAX_BULK_ADD + '件までです');
 
   const have = {};
   listFavorites_(user.email).forEach(f => { have[f.videoId] = true; });
-
-  const candidates = [];
-  const skipped = [];
-  inputs.forEach(item => {
-    const raw = String(item.url || item.videoId || '');
-    const vid = extractVideoId_(raw);
-    if (!vid) { skipped.push({ input: raw, reason: 'URLまたは動画IDを読み取れません' }); return; }
-    if (have[vid]) { skipped.push({ videoId: vid, reason: 'すでにお気に入りにあります' }); return; }
-    have[vid] = true;
-    candidates.push({ videoId: vid, title: String(item.title || '').trim(), channel: String(item.channel || '').trim() });
+  const r = prepareItems_(inputs, have, null, {
+    dup: 'すでにお気に入りにあります',
+    checkAllYouTube: true,
   });
-
-  const infos = oembedMany_(candidates.map(c => c.videoId));
-  const toAdd = [];
-  candidates.forEach((c, i) => {
-    const info = infos[i];
-    if (info.error) { skipped.push({ videoId: c.videoId, reason: info.error }); return; }
-    toAdd.push({ videoId: c.videoId, title: c.title || info.title, channel: c.channel || info.author });
-  });
-
-  const added = appendFavorites_(user.email, toAdd);
-  return { ok: true, added: added, skipped: skipped, favorites: listFavorites_(user.email) };
+  const added = appendFavorites_(user.email, r.toAdd);
+  return { ok: true, added: added, skipped: r.skipped, favorites: listFavorites_(user.email) };
 }
 
 /** プレイリストURL → 曲をまとめてお気に入りへ（YouTube Data API 使用） */
@@ -398,7 +432,7 @@ function apiImportPlaylist_(req) {
     if (!v || !v.embeddable || v.privacyStatus === 'private') { unavailable++; return; }
     if (have[id]) { duplicated++; return; }
     have[id] = true;
-    toAdd.push({ videoId: id, title: v.title, channel: v.channel });
+    toAdd.push({ key: id, kind: 'yt', title: v.title, channel: v.channel });
   });
 
   const added = appendFavorites_(user.email, toAdd);
@@ -412,25 +446,22 @@ function apiImportPlaylist_(req) {
   };
 }
 
-/** 重複チェック済みの曲をまとめて末尾に追加 */
+/** 重複チェック済みの曲をまとめて末尾に追加（items は prepareItems_ の結果の形） */
 function appendFavorites_(email, items) {
   if (!items.length) return [];
   let order = listFavorites_(email).reduce((m, f) => Math.max(m, f.sortOrder || 0), 0);
   const now = new Date();
   const rows = items.map(c => {
     order++;
-    return {
+    return Object.assign(itemCols_(c), {
       id: Utilities.getUuid(),
       email: email,
-      video_id: c.videoId,
-      title: String(c.title || c.videoId).slice(0, 200),
-      channel: String(c.channel || '').slice(0, 100),
       sort_order: order,
       created_at: now,
-    };
+    });
   });
   appendObjs_('FAVORITES', rows);
-  return rows.map(r => ({ id: r.id, videoId: r.video_id, title: r.title, channel: r.channel }));
+  return rows.map(itemOut_);
 }
 
 function apiDeleteFavorite_(req) {
@@ -469,13 +500,7 @@ function listFavorites_(email) {
   return readAll_('FAVORITES')
     .filter(r => normEmail_(r.email) === email)
     .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
-    .map(r => ({
-      id: String(r.id),
-      videoId: String(r.video_id),
-      title: String(r.title),
-      channel: String(r.channel || ''),
-      sortOrder: Number(r.sort_order) || 0,
-    }));
+    .map(r => Object.assign(itemOut_(r), { sortOrder: Number(r.sort_order) || 0 }));
 }
 
 /* =========================================================
@@ -483,14 +508,16 @@ function listFavorites_(email) {
  * ========================================================= */
 function apiAddHistory_(req) {
   const user = auth_(req);
-  const vid = extractVideoId_(req.videoId);
-  if (!vid) fail_('動画IDが正しくありません');
-  appendObj_('HISTORY', {
+  const p = parseItem_({
+    videoId: req.videoId, url: req.url, kind: req.kind, embed: req.embed,
+    title: req.title, thumb: req.thumb,
+  }, true);
+  if (p.error) fail_('曲の情報が正しくありません');
+  appendObj_('HISTORY', Object.assign(itemCols_(p), {
     email: user.email,
-    video_id: vid,
-    title: String(req.title || vid).slice(0, 200),
+    title: String(req.title || p.title || p.key).slice(0, 200),
     played_at: new Date(),
-  });
+  }));
   const sh = sheet_('HISTORY');
   if (sh.getLastRow() > HISTORY_MAX_ROWS + 1) sh.deleteRows(2, 1000);
   return { ok: true };
@@ -506,11 +533,10 @@ function apiGetHistory_(req) {
     const v = String(r.video_id);
     if (seen[v]) continue;
     seen[v] = true;
-    out.push({
-      videoId: v,
-      title: String(r.title),
-      playedAt: r.played_at instanceof Date ? r.played_at.getTime() : Number(r.played_at) || 0,
-    });
+    const o = itemOut_(r);
+    delete o.id;
+    o.playedAt = r.played_at instanceof Date ? r.played_at.getTime() : Number(r.played_at) || 0;
+    out.push(o);
   }
   return { ok: true, history: out };
 }
@@ -540,6 +566,7 @@ function apiPlCreate_(req) {
   const now = new Date();
   appendObj_('PLAYLISTS', {
     id: id, email: user.email, name: name, created_at: now, updated_at: now, sort_order: ordered.length + 1,
+    share_on: false, share_to: '[]',
   });
 
   let r = { added: [], skipped: [] };
@@ -572,7 +599,7 @@ function apiPlAdd_(req) {
   const user = auth_(req);
   const list = findMyPlaylist_(user.email, req.id);
   let inputs = Array.isArray(req.items) ? req.items : [];
-  if (req.url) inputs = [{ url: req.url }];
+  if (req.url) inputs = [{ url: req.url, title: req.title, kind: req.kind }];
   if (!inputs.length) fail_('追加する曲がありません');
   const r = addPlItems_(user.email, list.id, inputs);
   if (r.added.length) updateRow_('PLAYLISTS', list._row, { updated_at: new Date() });
@@ -606,7 +633,7 @@ function apiPlImport_(req) {
     if (room <= 0) { full++; return; }
     have[id] = true;
     room--;
-    toAdd.push({ videoId: id, title: v.title, channel: v.channel });
+    toAdd.push({ key: id, kind: 'yt', title: v.title, channel: v.channel });
   });
 
   const added = appendPlItems_(user.email, list.id, toAdd);
@@ -693,44 +720,18 @@ function sortPlaylists_(lists) {
     });
 }
 
-/** 重複・上限をチェックして追加。タイトルが無いものだけ oEmbed で取得 */
+/** 重複・上限をチェックして追加。タイトルが無いものだけ情報を取得 */
 function addPlItems_(email, playlistId, inputs) {
   if (inputs.length > MY_PLAYLIST_ITEMS_MAX) fail_('一度に追加できるのは' + MY_PLAYLIST_ITEMS_MAX + '曲までです');
   const have = {};
   plItemsOf_(email, playlistId).forEach(it => { have[String(it.video_id)] = true; });
-  let room = MY_PLAYLIST_ITEMS_MAX - Object.keys(have).length;
-
-  const candidates = [];
-  const skipped = [];
-  inputs.forEach(item => {
-    const raw = String(item.videoId || item.url || '');
-    const vid = extractVideoId_(raw);
-    if (!vid) { skipped.push({ input: raw, reason: 'URLまたは動画IDを読み取れません' }); return; }
-    if (have[vid]) { skipped.push({ videoId: vid, reason: 'すでにこのプレイリストに入っています' }); return; }
-    if (room <= 0) { skipped.push({ videoId: vid, reason: '1つのプレイリストは' + MY_PLAYLIST_ITEMS_MAX + '曲までです' }); return; }
-    have[vid] = true;
-    room--;
-    candidates.push({ videoId: vid, title: String(item.title || '').trim(), channel: String(item.channel || '').trim() });
+  const room = MY_PLAYLIST_ITEMS_MAX - Object.keys(have).length;
+  const r = prepareItems_(inputs, have, room, {
+    dup: 'すでにこのプレイリストに入っています',
+    full: '1つのプレイリストは' + MY_PLAYLIST_ITEMS_MAX + '曲までです',
+    checkAllYouTube: false,
   });
-
-  const needInfo = candidates.filter(c => !c.title);
-  if (needInfo.length > MAX_BULK_ADD) fail_('タイトル不明の曲は一度に' + MAX_BULK_ADD + '件までです');
-  const infos = oembedMany_(needInfo.map(c => c.videoId));
-  const infoMap = {};
-  needInfo.forEach((c, i) => { infoMap[c.videoId] = infos[i]; });
-
-  const toAdd = [];
-  candidates.forEach(c => {
-    const info = infoMap[c.videoId];
-    if (info && info.error) { skipped.push({ videoId: c.videoId, reason: info.error }); return; }
-    toAdd.push({
-      videoId: c.videoId,
-      title: c.title || (info && info.title) || c.videoId,
-      channel: c.channel || (info && info.author) || '',
-    });
-  });
-
-  return { added: appendPlItems_(email, playlistId, toAdd), skipped: skipped };
+  return { added: appendPlItems_(email, playlistId, r.toAdd), skipped: r.skipped };
 }
 
 function appendPlItems_(email, playlistId, items) {
@@ -739,19 +740,16 @@ function appendPlItems_(email, playlistId, items) {
   const now = new Date();
   const rows = items.map(c => {
     order++;
-    return {
+    return Object.assign(itemCols_(c), {
       id: Utilities.getUuid(),
       playlist_id: String(playlistId),
       email: email,
-      video_id: c.videoId,
-      title: String(c.title || c.videoId).slice(0, 200),
-      channel: String(c.channel || '').slice(0, 100),
       sort_order: order,
       created_at: now,
-    };
+    });
   });
   appendObjs_('PLAYLIST_ITEMS', rows);
-  return rows.map(r => ({ id: r.id, videoId: r.video_id, title: r.title, channel: r.channel }));
+  return rows.map(itemOut_);
 }
 
 function plItemsOf_(email, playlistId) {
@@ -772,7 +770,7 @@ function cleanPlName_(name) {
   return s;
 }
 
-/** 本人のプレイリストをすべて（曲つき）返す */
+/** 本人のプレイリストをすべて（曲つき・公開設定つき）返す */
 function listMyPlaylists_(email) {
   const lists = sortPlaylists_(readAll_('PLAYLISTS').filter(r => normEmail_(r.email) === email));
   const byList = {};
@@ -784,14 +782,11 @@ function listMyPlaylists_(email) {
   return lists.map(l => ({
     id: String(l.id),
     name: String(l.name),
+    shareOn: isOn_(l.share_on),
+    shareTo: parseShareTo_(l.share_to),
     items: (byList[String(l.id)] || [])
       .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
-      .map(r => ({
-        id: String(r.id),
-        videoId: String(r.video_id),
-        title: String(r.title),
-        channel: String(r.channel || ''),
-      })),
+      .map(itemOut_),
   }));
 }
 
@@ -799,13 +794,467 @@ function plResult_(email, extra) {
   return Object.assign({
     ok: true,
     playlists: listMyPlaylists_(email),
+    contacts: listContacts_(email),
     max: MY_PLAYLISTS_MAX,
     maxItems: MY_PLAYLIST_ITEMS_MAX,
+    contactsMax: CONTACTS_MAX,
   }, extra || {});
 }
 
 function toMs_(v) {
   return v instanceof Date ? v.getTime() : Number(v) || 0;
+}
+
+/* =========================================================
+ * 指定した会員だけに公開（家族・友人）
+ *   ・公開相手は Contacts シートに「持ち主ごと」に登録
+ *   ・プレイリストごとに share_on（公開スイッチ）と share_to（公開相手のメール配列）
+ *   ・既定は非公開。公開相手から外した人には見えなくなる
+ * ========================================================= */
+function apiPlShareSet_(req) {
+  const user = auth_(req);
+  const list = findMyPlaylist_(user.email, req.id);
+  const mine = listContacts_(user.email).map(c => c.email);
+  const src = Array.isArray(req.to) ? req.to : parseShareTo_(list.share_to);
+  const to = [];
+  src.forEach(e => {
+    const v = normEmail_(e);
+    if (mine.indexOf(v) !== -1 && to.indexOf(v) === -1) to.push(v);
+  });
+  const on = req.on === true;
+  if (on && !to.length) fail_('公開する相手を1人以上選んでください');
+  updateRow_('PLAYLISTS', list._row, { share_on: on, share_to: JSON.stringify(to), updated_at: new Date() });
+  return plResult_(user.email);
+}
+
+function apiContactAdd_(req) {
+  const user = auth_(req);
+  const email = normEmail_(req.email);
+  if (!isEmail_(email)) fail_('メールアドレスの形式が正しくありません');
+  if (email === user.email) fail_('ご自身のメールアドレスは登録できません');
+  const list = listContacts_(user.email);
+  if (list.some(c => c.email === email)) fail_('この相手はすでに登録されています');
+  if (list.length >= CONTACTS_MAX) fail_('公開相手は' + CONTACTS_MAX + '人までです');
+  appendObj_('CONTACTS', {
+    owner_email: user.email,
+    member_email: email,
+    label: cleanLabel_(req.label, email),
+    relation: cleanRelation_(req.relation),
+    created_at: new Date(),
+  });
+  return plResult_(user.email, { addedEmail: email });
+}
+
+function apiContactUpdate_(req) {
+  const user = auth_(req);
+  const email = normEmail_(req.email);
+  const row = readAll_('CONTACTS').find(r => normEmail_(r.owner_email) === user.email && normEmail_(r.member_email) === email);
+  if (!row) fail_('公開相手が見つかりません');
+  const upd = {};
+  if (req.label !== undefined) upd.label = cleanLabel_(req.label, email);
+  if (req.relation !== undefined) upd.relation = cleanRelation_(req.relation);
+  updateRow_('CONTACTS', row._row, upd);
+  return plResult_(user.email);
+}
+
+/** 公開相手を削除：その人に公開していたプレイリストからも外す（誰もいなくなったら非公開に戻す） */
+function apiContactDelete_(req) {
+  const user = auth_(req);
+  const email = normEmail_(req.email);
+  const n = deleteWhere_('CONTACTS', r => normEmail_(r.owner_email) === user.email && normEmail_(r.member_email) === email);
+  if (!n) fail_('公開相手が見つかりません');
+  readAll_('PLAYLISTS').forEach(l => {
+    if (normEmail_(l.email) !== user.email) return;
+    const to = parseShareTo_(l.share_to);
+    if (to.indexOf(email) === -1) return;
+    const rest = to.filter(e => e !== email);
+    updateRow_('PLAYLISTS', l._row, {
+      share_to: JSON.stringify(rest),
+      share_on: rest.length ? isOn_(l.share_on) : false,
+    });
+  });
+  return plResult_(user.email);
+}
+
+function listContacts_(email) {
+  return readAll_('CONTACTS')
+    .filter(r => normEmail_(r.owner_email) === email)
+    .sort((a, b) => toMs_(a.created_at) - toMs_(b.created_at))
+    .map(r => ({
+      email: normEmail_(r.member_email),
+      label: String(r.label || ''),
+      relation: CONTACT_RELATIONS.indexOf(String(r.relation)) !== -1 ? String(r.relation) : 'その他',
+    }));
+}
+
+/** 自分に公開されているプレイリスト（他の会員のもの） */
+function apiSharedList_(req) {
+  const user = auth_(req);
+  canView_.contacts = null;
+  const lists = readAll_('PLAYLISTS').filter(l => canView_(l, user.email));
+  return { ok: true, shared: sharedOut_(lists) };
+}
+
+/** 共有リンク（?share=ID）から開く */
+function apiSharedGet_(req) {
+  const user = auth_(req);
+  canView_.contacts = null;
+  const id = String(req.id || '');
+  const l = readAll_('PLAYLISTS').find(r => String(r.id) === id);
+  if (l && normEmail_(l.email) === user.email) return { ok: true, own: true, id: id };
+  if (!l || !canView_(l, user.email)) {
+    fail_('このプレイリストは見られません（非公開になったか、あなたが公開相手に入っていません）');
+  }
+  return { ok: true, playlist: sharedOut_([l])[0] };
+}
+
+/** 閲覧できるか：公開中・公開相手に入っている・持ち主の公開相手リストに今も入っている */
+function canView_(l, me) {
+  const owner = normEmail_(l.email);
+  if (owner === me || !isOn_(l.share_on)) return false;
+  if (parseShareTo_(l.share_to).indexOf(me) === -1) return false;
+  if (!canView_.contacts) canView_.contacts = readAll_('CONTACTS');
+  return canView_.contacts.some(c => normEmail_(c.owner_email) === owner && normEmail_(c.member_email) === me);
+}
+
+function sharedOut_(lists) {
+  if (!lists.length) return [];
+  const ids = {};
+  lists.forEach(l => { ids[String(l.id)] = { owner: normEmail_(l.email), items: [] }; });
+  readAll_('PLAYLIST_ITEMS').forEach(r => {
+    const g = ids[String(r.playlist_id)];
+    if (g && normEmail_(r.email) === g.owner) g.items.push(r);
+  });
+  const names = {};
+  readAll_('USERS').forEach(u => { names[normEmail_(u.email)] = String(u.nickname || ''); });
+  return lists
+    .map(l => ({
+      id: String(l.id),
+      name: String(l.name),
+      ownerName: names[normEmail_(l.email)] || '会員',
+      updatedAt: toMs_(l.updated_at),
+      items: ids[String(l.id)].items
+        .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
+        .map(itemOut_),
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function parseShareTo_(v) {
+  try {
+    const a = JSON.parse(String(v || '[]'));
+    return Array.isArray(a) ? a.map(normEmail_).filter(Boolean) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function isOn_(v) {
+  return v === true || String(v).toUpperCase() === 'TRUE';
+}
+
+function cleanLabel_(label, email) {
+  const s = String(label || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 20);
+  return s || String(email).split('@')[0].slice(0, 20);
+}
+
+function cleanRelation_(v) {
+  return CONTACT_RELATIONS.indexOf(String(v)) !== -1 ? String(v) : 'その他';
+}
+
+/* =========================================================
+ * 曲データ（YouTube / Amazon Music 共通）
+ *   video_id 列にはキーを保存：YouTube＝動画ID、Amazon＝「am_種類_ID」
+ * ========================================================= */
+const AMAZON_URL_RE = /^https?:\/\/(?:[a-z0-9-]+\.)*(?:amazon\.(?:co\.jp|com|co\.uk|de|fr|it|es|ca|in|com\.au|com\.mx|com\.br)|amzn\.(?:to|asia)|a\.co)(?:[\/?#]|$)/i;
+const AMAZON_SHORT_RE = /^https?:\/\/(?:[a-z0-9-]+\.)*(?:amzn\.(?:to|asia)|a\.co)(?:[\/?#]|$)/i;
+const AMAZON_TYPES = {
+  albums: 'a', tracks: 't', playlists: 'p', 'user-playlists': 'u',
+  artists: 'r', podcasts: 'c', episodes: 'e', stations: 's',
+};
+
+function isAmazonText_(s) {
+  const v = String(s || '');
+  return /(?:^|\/\/|\.)(?:amazon\.[a-z.]+|amzn\.(?:to|asia)|a\.co)(?:[\/?#]|$)/i.test(v) || /<iframe[^>]+amazon/i.test(v);
+}
+
+/**
+ * 入力1件を解釈する。戻り値 {kind, key, url, embed, title, channel, thumb} または {error}
+ * noNetwork=true のときは短縮URLの展開をしない（履歴など保存済みデータ用）
+ */
+function parseItem_(item, noNetwork) {
+  item = item || {};
+  const raw = String(item.url || item.videoId || '').trim();
+  const title = String(item.title || '').trim();
+  const channel = String(item.channel || '').trim();
+  const amazon = item.kind === 'amazon' || /^am_/.test(String(item.videoId || '')) ||
+    isAmazonText_(raw) || isAmazonText_(item.embed);
+  if (amazon) {
+    const a = parseAmazon_(String(item.embed || '').trim() || raw, noNetwork);
+    if (a.error) return a;
+    return {
+      kind: 'amazon', key: a.key, url: a.url, embed: a.embed,
+      title: title, channel: channel || 'Amazon Music', thumb: cleanThumb_(item.thumb),
+    };
+  }
+  const vid = extractVideoId_(raw);
+  if (!vid) return { error: 'URLを読み取れません（YouTube または Amazon Music のURLを貼ってください）' };
+  return { kind: 'yt', key: vid, url: '', embed: '', title: title, channel: channel, thumb: '' };
+}
+
+function parseAmazon_(input, noNetwork) {
+  let s = String(input || '').trim().replace(/&amp;/g, '&');
+  // 埋め込みコード（共有 → 埋め込み）をそのまま貼った場合
+  const iframe = s.match(/src\s*=\s*["'](https:\/\/music\.amazon\.[a-z.]+\/embed\/[^"']+)["']/i);
+  if (iframe) s = iframe[1];
+  if (/^https:\/\/music\.amazon\.[a-z.]+\/embed\//i.test(s)) {
+    const m = s.match(/\/embed\/([A-Za-z0-9]{6,40})/);
+    if (!m) return { error: 'Amazon Music の埋め込みコードを読み取れません' };
+    const u = s.slice(0, 600);
+    return { key: 'am_x_' + m[1], url: u, embed: u };
+  }
+  // 「〜をAmazon Musicで聴こう https://…」のような共有文から URL だけ取り出す
+  const found = s.match(/https?:\/\/[^\s"'<>]+/);
+  if (found) s = found[0];
+  if (!AMAZON_URL_RE.test(s)) return { error: 'Amazon Music のURLを読み取れません' };
+  if (AMAZON_SHORT_RE.test(s)) {
+    if (noNetwork) return { error: '短縮URLは使えません' };
+    s = resolveShortUrl_(s);
+    if (!s || !AMAZON_URL_RE.test(s) || AMAZON_SHORT_RE.test(s)) {
+      return { error: '短縮URLを開けませんでした。Amazon Music の「共有」→「リンクをコピー」で取得したURLを貼ってください' };
+    }
+  }
+  const id = amazonId_(s);
+  if (!id) return { error: 'Amazon Music の曲・アルバム・プレイリストのURLを貼ってください' };
+  return { key: 'am_' + id.type + '_' + id.id, url: s.split('#')[0].slice(0, 600), embed: '' };
+}
+
+function amazonId_(url) {
+  const t = url.match(/[?&]trackAsin=([A-Za-z0-9]{6,20})/);
+  if (t) return { type: 't', id: t[1] };
+  const ep = url.match(/\/episodes\/([A-Za-z0-9_-]{6,80})/);
+  if (ep) return { type: 'e', id: ep[1] };
+  const m = url.match(/\/(albums|tracks|playlists|user-playlists|artists|podcasts|stations)\/([A-Za-z0-9_-]{6,80})/);
+  if (m) return { type: AMAZON_TYPES[m[1]], id: m[2] };
+  const d = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/);
+  if (d) return { type: 'd', id: d[1] };
+  return null;
+}
+
+function resolveShortUrl_(u) {
+  try {
+    for (let i = 0; i < 4; i++) {
+      const res = UrlFetchApp.fetch(u, { followRedirects: false, muteHttpExceptions: true });
+      const h = res.getAllHeaders();
+      const loc = h.Location || h.location;
+      if (!loc) return AMAZON_SHORT_RE.test(u) ? '' : u;
+      u = /^https?:\/\//.test(loc) ? String(loc) : u.replace(/^(https?:\/\/[^\/]+).*$/, '$1') + loc;
+      if (!AMAZON_SHORT_RE.test(u)) return u;
+    }
+  } catch (e) {
+    console.warn('resolveShortUrl_', e);
+  }
+  return '';
+}
+
+/** Amazon のページからタイトル・ジャケット画像を取得（取れないことも多いので失敗は無視） */
+function amazonMeta_(url) {
+  const cache = CacheService.getScriptCache();
+  const ck = cacheKey_('am', url);
+  const c = cache.get(ck);
+  if (c) return JSON.parse(c);
+  const out = { title: '', thumb: '' };
+  try {
+    const res = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: { 'Accept-Language': 'ja,en;q=0.8' },
+    });
+    if (res.getResponseCode() === 200) {
+      const html = res.getContentText().slice(0, 300000);
+      const og = (prop) => {
+        const m = html.match(new RegExp('<meta[^>]+property=["\']og:' + prop + '["\'][^>]+content=["\']([^"\']+)["\']', 'i')) ||
+          html.match(new RegExp('<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:' + prop + '["\']', 'i'));
+        return m ? decodeEntities_(m[1]) : '';
+      };
+      let title = og('title');
+      if (!title) {
+        const t = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        title = t ? decodeEntities_(t[1]) : '';
+      }
+      title = title
+        .replace(/\s*[-|｜:：]\s*Amazon(\.co\.jp|\.com)?\s*(Music|ミュージック)?.*$/i, '')
+        .replace(/^Amazon\s*(Music|ミュージック)\s*[-|｜:：]\s*/i, '')
+        .replace(/^Amazon(\.co\.jp|\.com)?\s*$/i, '')
+        .trim();
+      if (/robot|captcha|ロボット/i.test(title)) title = '';
+      out.title = title.slice(0, 200);
+      out.thumb = cleanThumb_(og('image'));
+    }
+  } catch (e) {
+    console.warn('amazonMeta_', e);
+  }
+  cache.put(ck, JSON.stringify(out), 21600);
+  return out;
+}
+
+function cleanThumb_(u) {
+  const s = String(u || '').trim();
+  return /^https:\/\/[a-z0-9.-]*(media-amazon|ssl-images-amazon|images-amazon)\.com\/[^\s"'<>]+$/i.test(s) ? s.slice(0, 500) : '';
+}
+
+/**
+ * 追加しようとしている曲の確認：重複・上限・再生可否・タイトル
+ * have＝登録済みキーの表、room＝残り枠（null なら上限なし）
+ */
+function prepareItems_(inputs, have, room, opt) {
+  const candidates = [];
+  const skipped = [];
+  inputs.forEach(item => {
+    const p = parseItem_(item);
+    if (p.error) {
+      skipped.push({ input: String((item && (item.url || item.videoId)) || ''), reason: p.error });
+      return;
+    }
+    if (have[p.key]) { skipped.push({ videoId: p.key, reason: opt.dup }); return; }
+    if (room !== null && room <= 0) { skipped.push({ videoId: p.key, reason: opt.full }); return; }
+    have[p.key] = true;
+    if (room !== null) room--;
+    candidates.push(p);
+  });
+
+  // YouTube：タイトルと埋め込み可否を oEmbed で確認
+  const ytNeed = candidates.filter(c => c.kind === 'yt' && (opt.checkAllYouTube || !c.title));
+  if (ytNeed.length > MAX_BULK_ADD) fail_('タイトル不明の曲は一度に' + MAX_BULK_ADD + '件までです');
+  const infos = oembedMany_(ytNeed.map(c => c.key));
+  const bad = {};
+  ytNeed.forEach((c, i) => {
+    const info = infos[i] || {};
+    if (info.error) { bad[c.key] = info.error; return; }
+    if (!c.title) c.title = info.title || '';
+    if (!c.channel) c.channel = info.author || '';
+  });
+
+  // Amazon Music：タイトルが無ければページから取得を試みる
+  let fetched = 0;
+  candidates.forEach(c => {
+    if (c.kind !== 'amazon') return;
+    if (!c.title && fetched < AMAZON_META_FETCH_MAX && !/^am_x_/.test(c.key)) {
+      fetched++;
+      const meta = amazonMeta_(c.url);
+      c.title = meta.title;
+      if (!c.thumb) c.thumb = meta.thumb;
+    }
+    if (!c.title) c.title = 'Amazon Music（' + amazonTypeLabel_(c.key) + '）';
+  });
+
+  const toAdd = [];
+  candidates.forEach(c => {
+    if (bad[c.key]) skipped.push({ videoId: c.key, reason: bad[c.key] });
+    else toAdd.push(c);
+  });
+  return { toAdd: toAdd, skipped: skipped };
+}
+
+function amazonTypeLabel_(key) {
+  const t = String(key).split('_')[1];
+  return { a: 'アルバム', t: '曲', p: 'プレイリスト', u: 'プレイリスト', r: 'アーティスト',
+    c: 'ポッドキャスト', e: 'エピソード', s: 'ステーション', d: '商品', x: '埋め込み' }[t] || 'Amazon';
+}
+
+/** シートに書く列 */
+function itemCols_(c) {
+  return {
+    video_id: c.key,
+    title: String(c.title || c.key).slice(0, 200),
+    channel: String(c.channel || '').slice(0, 100),
+    kind: c.kind === 'amazon' ? 'amazon' : 'yt',
+    url: c.kind === 'amazon' ? String(c.url || '').slice(0, 600) : '',
+    embed: c.kind === 'amazon' ? String(c.embed || '').slice(0, 600) : '',
+    thumb: c.kind === 'amazon' ? String(c.thumb || '') : '',
+  };
+}
+
+/** 画面に返す形 */
+function itemOut_(r) {
+  const amazon = String(r.kind) === 'amazon';
+  return {
+    id: String(r.id || ''),
+    videoId: String(r.video_id),
+    kind: amazon ? 'amazon' : 'yt',
+    url: amazon ? String(r.url || '') : '',
+    embed: amazon ? String(r.embed || '') : '',
+    thumb: amazon ? String(r.thumb || '') : '',
+    title: String(r.title),
+    channel: String(r.channel || ''),
+  };
+}
+
+/* =========================================================
+ * DJ紹介（音声合成）
+ *   読み上げる文章だけを送る（「〜で読み上げてください」などの指示文を混ぜない）
+ * ========================================================= */
+function apiTts_(req) {
+  const user = auth_(req);
+  const text = cleanNarration_(req.text).slice(0, NARRATION_MAX);
+  if (!text) fail_('読み上げる文章がありません');
+
+  const cache = CacheService.getScriptCache();
+  const rk = cacheKey_('tts', user.email);
+  const used = Number(cache.get(rk) || 0);
+  if (used >= TTS_LIMIT_PER_6H) fail_('音声の利用回数が上限に達しました。数時間おいてからお試しください');
+  cache.put(rk, String(used + 1), 21600);
+
+  const key = props_().getProperty('GEMINI_API_KEY');
+  if (!key) fail_('音声の準備ができていません（管理者：GEMINI_API_KEY を設定してください）');
+  const model = props_().getProperty('GEMINI_TTS_MODEL') || 'gemini-2.5-flash-preview-tts';
+  const voice = props_().getProperty('GEMINI_TTS_VOICE') || 'Aoede';
+  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      // 本文のみ。口調の指定は入れない（指示文まで読み上げられるのを防ぐ）
+      contents: [{ role: 'user', parts: [{ text: text }] }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+      },
+    }),
+  });
+  const code = res.getResponseCode();
+  if (code !== 200) {
+    console.error('TTS error', code, res.getContentText());
+    if (code === 429) fail_('音声が混み合っています。少し時間をおいてお試しください');
+    fail_('音声を作れませんでした（' + code + '）');
+  }
+  try {
+    const body = JSON.parse(res.getContentText());
+    const part = body.candidates[0].content.parts.find(p => p.inlineData && p.inlineData.data);
+    return { ok: true, audio: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/L16;rate=24000', text: text };
+  } catch (err) {
+    console.error('TTS parse error', res.getContentText().slice(0, 500));
+    fail_('音声を読み取れませんでした。もう一度お試しください');
+  }
+}
+
+/** 読み上げ文から、冒頭の指示文・見出し・ト書き・記号を取り除く */
+function cleanNarration_(s) {
+  let t = String(s || '').replace(/\r/g, '').trim();
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    t = t.replace(/^\s*(ナレーション|ナレーター|DJ|ＤＪ|台本|原稿|セリフ|読み上げ(文|原稿)?|本文)\s*[:：]\s*/i, '');
+    t = t.replace(/^[^。\n]{0,60}?(読み上げ|読んで|朗読|ナレーション|話して|喋って|しゃべって|言って)[^。\n]{0,10}?(ください|下さい)[。．.！!：:\s]*/, '');
+    t = t.replace(/^[^。\n]{0,40}((口調|声色|声|トーン|調子|雰囲気|テンション|感じ)で|風に|らしく)[：:]\s*/, '');
+    t = t.replace(/^(以下|次)の(文章|文|原稿|テキスト|内容)[^。\n]{0,30}[。：:\n]\s*/, '');
+    t = t.replace(/^[（(【\[][^）)】\]]{0,40}[）)】\]]\s*/, '');
+    if (t === before) break;
+  }
+  t = t.replace(/[（(【\[](明るく|やさしく|優しく|ゆっくり|落ち着いて|元気に|笑顔で|しっとり[とした]*|穏やかに|間|間を(置|お)いて|BGM[^）)】\]]*|SE[^）)】\]]*|効果音[^）)】\]]*)[）)】\]]/g, '');
+  t = t.replace(/^「([\s\S]*)」$/, '$1').replace(/^"([\s\S]*)"$/, '$1');
+  t = t.replace(/[*#_`~|]/g, '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return t;
 }
 
 /* =========================================================
@@ -833,9 +1282,11 @@ function apiGeminiRecommend_(req) {
     '- 同じアーティストは2曲まで。',
     '- query には、YouTube検索でその曲が見つかりやすい検索語を「曲名 アーティスト名」の形で入れる。',
     '- 希望が作業用BGMのような長時間の音楽に向いている場合は、その種類の長時間動画を探す検索語でもよい。その場合 title に内容を短く書き、artist は空文字にする。',
+    '- djTalk は、夜のラジオDJがこの選曲を紹介する語り（話し言葉、100〜160字）。そのまま音声で流すので、',
+    '  「〜で読み上げてください」「ナレーション：」などの指示文・見出し・ト書き（括弧書きの演出）・記号・絵文字は一切入れない。',
     '',
     '次のJSON形式だけを出力してください：',
-    '{"playlistTitle":"プレイリスト名（15字以内）","comment":"選曲の意図を1〜2文で","items":[{"title":"曲名","artist":"アーティスト名","reason":"選んだ理由（25字以内）","query":"検索語"}]}',
+    '{"playlistTitle":"プレイリスト名（15字以内）","comment":"選曲の意図を1〜2文で","djTalk":"DJの語り","items":[{"title":"曲名","artist":"アーティスト名","reason":"選んだ理由（25字以内）","query":"検索語"}]}',
   ].join('\n');
 
   const data = geminiJson_(prompt);
@@ -860,6 +1311,7 @@ function apiGeminiRecommend_(req) {
     ok: true,
     playlistTitle: String(data.playlistTitle || 'AI選曲').slice(0, 40),
     comment: String(data.comment || '').slice(0, 200),
+    djTalk: cleanNarration_(data.djTalk || data.comment || '').slice(0, NARRATION_MAX),
     items: items,
     searchEnabled: !!props_().getProperty('YOUTUBE_API_KEY'),
   };
@@ -1239,7 +1691,12 @@ function findUser_(email) {
 }
 
 function publicUser_(u) {
-  return { email: normEmail_(u.email), nickname: String(u.nickname || ''), status: String(u.status) };
+  return {
+    email: normEmail_(u.email),
+    nickname: String(u.nickname || ''),
+    status: String(u.status),
+    agreed: String(u.terms_version || '') === TERMS_VERSION,
+  };
 }
 
 /* =========================================================

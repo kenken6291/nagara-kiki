@@ -39,13 +39,17 @@
 
 <header class="topbar">
   <h1 class="brand">ながら聴き</h1>
+  <div class="top-right">
+  <button type="button" class="btn small help-btn" data-open-help>使い方</button>
   <details class="account" id="accountMenu" hidden>
     <summary><span id="userName"></span> さん</summary>
     <div class="account-menu">
       <button type="button" id="btnChangePw">パスワードを変更</button>
+      <button type="button" data-open-terms>注意事項・免責事項</button>
       <button type="button" id="btnLogout">ログアウト</button>
     </div>
   </details>
+  </div>
 </header>
 
 <main id="app" hidden>
@@ -54,6 +58,17 @@
     <div class="screen">
       <div id="ytPlayer"></div>
       <p class="screen-empty" id="screenEmpty">お気に入りから曲を選ぶと、ここで再生が始まります</p>
+      <!-- Amazon Music の曲を選んだとき -->
+      <div class="am-panel" id="amPanel" hidden>
+        <div class="am-embed" id="amEmbed"></div>
+        <div class="am-card" id="amCard">
+          <p class="am-badge">Amazon Music</p>
+          <p class="am-title" id="amTitle"></p>
+          <a class="btn primary" id="amOpen" href="#" target="_blank" rel="noopener">Amazon Musicで開く</a>
+          <p class="am-note">Amazon Music の曲は自動で次へ進みません。聴き終わったら「次へ」を押してください。</p>
+        </div>
+        <a class="am-mini" id="amMini" href="#" target="_blank" rel="noopener" hidden>Amazon Musicで開く</a>
+      </div>
     </div>
 
     <div class="now">
@@ -104,6 +119,7 @@
   <nav class="tabs" role="tablist" aria-label="表示の切り替え">
     <button type="button" class="tab" role="tab" id="tab-fav" aria-controls="panel-fav" aria-selected="true">お気に入り <span id="favCount" class="count"></span></button>
     <button type="button" class="tab" role="tab" id="tab-pl" aria-controls="panel-pl" aria-selected="false">プレイリスト <span id="plTabCount" class="count"></span></button>
+    <button type="button" class="tab" role="tab" id="tab-share" aria-controls="panel-share" aria-selected="false">共有 <span id="shareTabCount" class="count"></span></button>
     <button type="button" class="tab" role="tab" id="tab-ai" aria-controls="panel-ai" aria-selected="false">AI選曲</button>
     <button type="button" class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false">履歴</button>
   </nav>
@@ -111,10 +127,11 @@
   <!-- お気に入り -->
   <section class="panel" id="panel-fav" role="tabpanel" aria-labelledby="tab-fav">
     <form id="formAdd" class="row" autocomplete="off">
-      <label for="addUrl" class="sr-only">YouTubeの動画またはプレイリストのURL</label>
-      <input id="addUrl" class="input" type="text" inputmode="url" placeholder="YouTubeの動画・プレイリストのURLを貼り付け" required>
+      <label for="addUrl" class="sr-only">YouTube または Amazon Music のURL</label>
+      <input id="addUrl" class="input" type="text" inputmode="url" placeholder="YouTube・Amazon Music のURLを貼り付け" required>
       <button type="submit" class="btn primary">追加</button>
     </form>
+    <p class="hint">YouTube の動画・プレイリスト、Amazon Music の曲・アルバム・プレイリストのURLを追加できます。</p>
     <div class="list-head wrap">
       <button type="button" class="btn small" id="btnPlayFav">最初から再生</button>
       <button type="button" class="btn small" id="btnShufflePlayFav">シャッフル再生</button>
@@ -144,9 +161,14 @@
         <h3 class="pl-name" id="plName"></h3>
         <span class="count" id="plCount"></span>
       </div>
+      <div class="pl-share-row">
+        <span class="share-chip" id="plShareChip"></span>
+        <button type="button" class="btn small" id="btnPlShareSet">公開設定</button>
+        <button type="button" class="btn small line" id="btnPlLine">LINEで送る</button>
+      </div>
       <form id="formPlAdd" class="row" autocomplete="off">
-        <label for="plAddUrl" class="sr-only">YouTubeの動画またはプレイリストのURL</label>
-        <input id="plAddUrl" class="input" type="text" inputmode="url" placeholder="YouTubeの動画・プレイリストのURLを貼り付け" required>
+        <label for="plAddUrl" class="sr-only">YouTube または Amazon Music のURL</label>
+        <input id="plAddUrl" class="input" type="text" inputmode="url" placeholder="YouTube・Amazon Music のURLを貼り付け" required>
         <button type="submit" class="btn primary">追加</button>
       </form>
       <div class="list-head wrap">
@@ -162,11 +184,76 @@
     </div>
   </section>
 
+  <!-- 共有 -->
+  <section class="panel" id="panel-share" role="tabpanel" aria-labelledby="tab-share" hidden>
+    <div id="shareIndex">
+      <div class="share-block">
+        <h3 class="sec-title">あなたに公開されたプレイリスト</h3>
+        <p class="hint">家族や友人が「あなただけに」公開したプレイリストです。再生や、自分のプレイリストへのコピーができます。</p>
+        <ul class="pl-grid" id="sharedGrid"></ul>
+      </div>
+
+      <div class="share-block">
+        <h3 class="sec-title">自分のプレイリストの公開・非公開</h3>
+        <p class="hint">スイッチで公開・非公開を切り替えます。はじめはすべて非公開です。公開すると、選んだ相手だけが見られます。</p>
+        <ul class="share-table" id="shareTable"></ul>
+      </div>
+
+      <div class="share-block">
+        <h3 class="sec-title">公開相手（家族・友人）</h3>
+        <p class="hint">相手が「ながら聴き」に登録したメールアドレスを入れてください。相手にはあなたのニックネームだけが表示され、メールアドレスは表示されません。</p>
+        <form id="formContact" class="contact-form" autocomplete="off">
+          <div class="field">
+            <label for="ctEmail">相手のメールアドレス</label>
+            <input id="ctEmail" class="input" type="email" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+          </div>
+          <div class="contact-form-row">
+            <div class="field">
+              <label for="ctLabel">呼び名（例：母、さとこさん）</label>
+              <input id="ctLabel" class="input" type="text" maxlength="20">
+            </div>
+            <div class="field">
+              <label for="ctRelation">区分</label>
+              <select id="ctRelation" class="input">
+                <option>家族</option><option>友人</option><option>その他</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" class="btn primary block">公開相手に追加</button>
+        </form>
+        <ul class="contact-list" id="contactList"></ul>
+      </div>
+    </div>
+
+    <!-- 公開されたプレイリストの中身 -->
+    <div id="sharedDetail" hidden>
+      <button type="button" class="link" id="btnShBack">← 共有の一覧へ</button>
+      <div class="pl-title-row">
+        <h3 class="pl-name" id="shName"></h3>
+        <span class="count" id="shCount"></span>
+      </div>
+      <p class="hint" id="shOwner"></p>
+      <div class="list-head wrap">
+        <button type="button" class="btn small" id="btnShPlay">最初から再生</button>
+        <button type="button" class="btn small" id="btnShShuffle">シャッフル再生</button>
+        <button type="button" class="btn small" id="btnShCopy">自分のプレイリストにコピー</button>
+      </div>
+      <ul class="list" id="shItems"></ul>
+    </div>
+  </section>
+
   <!-- AI選曲 -->
   <section class="panel" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden>
     <form id="formAi">
-      <label for="aiPrompt" class="lead">いまの気分や、聴きたい雰囲気を書いてください</label>
-      <textarea id="aiPrompt" class="input" rows="3" maxlength="300" placeholder="例：雨の日の午後にゆっくり聴けるボサノバ" required></textarea>
+      <label for="aiPrompt" class="lead">いまの気分や、聴きたい雰囲気を書いてください（話しかけてもOK）</label>
+      <div class="voice-wrap">
+        <textarea id="aiPrompt" class="input" rows="3" maxlength="300" placeholder="例：雨の日の午後にゆっくり聴けるボサノバ" required></textarea>
+        <button type="button" class="mic" id="btnMic" aria-pressed="false" aria-label="音声で入力">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+          <span id="micLabel">話す</span>
+        </button>
+      </div>
+      <p class="hint" id="micHint" hidden></p>
       <div class="chips" id="aiChips"></div>
       <button type="submit" class="btn primary block" id="btnAi">曲を選んでもらう</button>
     </form>
@@ -184,7 +271,9 @@
   <div class="auth-card">
     <div class="auth-intro" id="authIntro">
       <p class="auth-brand">ながら聴き</p>
-      <p class="auth-lead">YouTubeの曲をお気に入りに集めて、流しっぱなしで聴けます。</p>
+      <p class="auth-lead">YouTube・Amazon Music の曲をお気に入りに集めて、流しっぱなしで聴けます。</p>
+      <p class="auth-help"><button type="button" class="link" data-open-help>使い方を見る</button></p>
+      <p class="note auth-notice" id="authNotice" hidden></p>
     </div>
 
     <!-- ログイン -->
@@ -224,7 +313,12 @@
         <label for="regEmail">メールアドレス</label>
         <input id="regEmail" class="input" autocapitalize="off" autocorrect="off" spellcheck="false" type="email" autocomplete="email" required>
       </div>
-      <button type="submit" class="btn primary block">仮パスワードを受け取る</button>
+      <fieldset class="agree">
+        <legend>登録の前に確認してください</legend>
+        <div class="agree-list" data-agree-list></div>
+        <button type="button" class="link" data-open-terms>全文を読む</button>
+      </fieldset>
+      <button type="submit" class="btn primary block" id="btnRegister" disabled>同意して仮パスワードを受け取る</button>
       <div class="auth-links">
         <button type="button" class="link" data-go="login">ログイン画面に戻る</button>
       </div>
@@ -272,6 +366,21 @@
       <div class="auth-links">
         <button type="button" class="link" data-go="forgot">コードをもう一度送る</button>
         <button type="button" class="link" data-go="login">ログイン画面に戻る</button>
+      </div>
+    </form>
+
+    <!-- 既存会員の同意 -->
+    <form class="auth-panel" data-panel="agree" id="formAgree" hidden>
+      <h2>注意事項・免責事項の確認</h2>
+      <p class="hint">新しい機能（家族・友人への公開など）の追加にあわせて、注意事項を更新しました。続けて使うには、すべての項目にチェックしてください。</p>
+      <fieldset class="agree">
+        <legend class="sr-only">同意する項目</legend>
+        <div class="agree-list" data-agree-list></div>
+        <button type="button" class="link" data-open-terms>全文を読む</button>
+      </fieldset>
+      <button type="submit" class="btn primary block" id="btnAgree" disabled>同意して続ける</button>
+      <div class="auth-links">
+        <button type="button" class="link" id="agreeLogout">ログアウト</button>
       </div>
     </form>
 
@@ -351,7 +460,118 @@
   </form>
 </dialog>
 
-<footer class="app-foot"><span id="appVersion"></span></footer>
+<!-- 公開設定 -->
+<dialog class="sheet" id="dlgShare" aria-labelledby="shareTitle">
+  <form class="sheet-card" id="formShare">
+    <h2 class="sheet-title" id="shareTitle">公開設定</h2>
+    <p class="share-state" id="shareState"></p>
+    <div class="switch-row">
+      <span id="shareSwitchLabel">このプレイリストを公開する</span>
+      <button type="button" class="switch" role="switch" id="shareSwitch" aria-checked="false" aria-labelledby="shareSwitchLabel"><span></span></button>
+    </div>
+    <div class="pick-bar">
+      <span class="sub-title">公開する相手</span>
+      <button type="button" class="link" id="shareAll">すべて選ぶ</button>
+    </div>
+    <div class="sheet-body">
+      <ul class="check-list" id="shareToList"></ul>
+      <details class="inline-add" id="shareAddBox">
+        <summary>＋ 公開相手を追加</summary>
+        <div class="field">
+          <label for="shAddEmail">相手のメールアドレス</label>
+          <input id="shAddEmail" class="input" type="email" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+        <div class="contact-form-row">
+          <div class="field">
+            <label for="shAddLabel">呼び名</label>
+            <input id="shAddLabel" class="input" type="text" maxlength="20">
+          </div>
+          <div class="field">
+            <label for="shAddRelation">区分</label>
+            <select id="shAddRelation" class="input"><option>家族</option><option>友人</option><option>その他</option></select>
+          </div>
+        </div>
+        <button type="button" class="btn small" id="shAddBtn">追加する</button>
+      </details>
+    </div>
+    <div class="share-send" id="shareSend">
+      <p class="hint" id="shareSendHint"></p>
+      <div class="share-send-btns">
+        <button type="button" class="btn small line" data-send="line">LINEで送る</button>
+        <button type="button" class="btn small" data-send="native" id="shareNative" hidden>ほかのアプリで送る</button>
+        <button type="button" class="btn small" data-send="mail">メールで送る</button>
+        <button type="button" class="btn small" data-send="copy">リンクをコピー</button>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn" data-close>閉じる</button>
+      <button type="submit" class="btn primary" id="shareSave">保存する</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 使い方 -->
+<dialog class="sheet wide" id="dlgHelp" aria-labelledby="helpTitle">
+  <div class="sheet-card">
+    <h2 class="sheet-title" id="helpTitle">ながら聴きの使い方</h2>
+    <div class="sheet-body doc">
+      <h3>1. 曲を集める</h3>
+      <p>「お気に入り」の欄に URL を貼って「追加」を押します。</p>
+      <ul>
+        <li><b>YouTube</b>：動画の URL、またはプレイリストの URL（最大200曲をまとめて追加）。</li>
+        <li><b>Amazon Music</b>：アプリやサイトの「共有」→「リンクをコピー」で取れる曲・アルバム・プレイリストの URL。「埋め込み」のコードを貼ると、画面の中で再生できる場合があります。</li>
+      </ul>
+      <p>「AI選曲」や「履歴」の「追加」「＋」からも集められます。</p>
+
+      <h3>2. 流しっぱなしで聴く</h3>
+      <p>曲を押すとその曲から順に再生し、終わると自動で次へ進みます。シャッフル・リピート（全曲／1曲／なし）は下のボタンで切り替えます。</p>
+      <p>Amazon Music の曲は、Amazon側の仕組みで自動では次へ進みません。「Amazon Musicで開く」で聴き、終わったら「次へ」を押してください（Amazon Music の会員登録やログインが必要な場合があります）。</p>
+
+      <h3>3. プレイリスト（1人30個まで）</h3>
+      <p>「プレイリスト」→「＋ 新しいプレイリスト」で作成します。1つに200曲まで入ります。「並べ替え」で一覧の順番を変えられます。</p>
+
+      <h3>4. 家族・友人だけに公開する</h3>
+      <ol>
+        <li>「共有」タブの「公開相手」に、相手が登録したメールアドレスと呼び名を追加します（相手にも「ながら聴き」への登録をお願いしてください）。</li>
+        <li>公開したいプレイリストのスイッチを入れ、見せる相手にチェックして「保存する」。</li>
+        <li>「LINEで送る」を押すと、プレイリストのリンクをその場で LINE に送れます。</li>
+      </ol>
+      <p>はじめはすべて<b>非公開</b>です。スイッチを切ればすぐに非公開に戻ります。公開相手に選ばれていない人には、リンクを知っていても見えません。</p>
+
+      <h3>5. AI選曲・音声入力・DJ紹介</h3>
+      <p>気分を書くか、「話す」を押して話しかけると、AI が曲を選びます。話している途中で間が空いても聞き取りを続けます。終わったらもう一度「話す（止める）」を押してください。</p>
+      <p>選曲のあとに「DJの紹介を聴く」を押すと、ラジオ風の紹介を音声で聴けます。</p>
+
+      <h3>うまくいかないとき</h3>
+      <ul>
+        <li>スマホで画面を消す・別のアプリに切り替えると、YouTube の再生は止まります（YouTube側の制約）。</li>
+        <li>「埋め込み不可」の動画は自動で飛ばします。</li>
+        <li>音声入力は、ブラウザがマイクに対応していないと使えません（iPhone は Safari、Android は Chrome を推奨）。</li>
+        <li>画面がおかしいときは、ページを再読み込みしてください。画面下の「ver」が最新か確認できます。</li>
+      </ul>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn" data-open-terms>注意事項・免責事項</button>
+      <button type="button" class="btn primary" data-close>閉じる</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 注意事項・免責事項 -->
+<dialog class="sheet wide" id="dlgTerms" aria-labelledby="termsTitle">
+  <div class="sheet-card">
+    <h2 class="sheet-title" id="termsTitle">注意事項・免責事項</h2>
+    <div class="sheet-body doc" id="termsBody"></div>
+    <div class="sheet-foot">
+      <button type="button" class="btn primary" data-close>閉じる</button>
+    </div>
+  </div>
+</dialog>
+
+<footer class="app-foot"><span id="appVersion"></span>
+  <button type="button" class="link foot-link" data-open-terms>注意事項・免責事項</button>
+  <button type="button" class="link foot-link" data-open-help>使い方</button>
+</footer>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
