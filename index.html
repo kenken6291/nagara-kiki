@@ -276,6 +276,12 @@
       </div>
       <p class="hint" id="micHint" hidden></p>
       <div class="chips" id="aiChips"></div>
+      <div class="model-picker">
+        <label for="modelSelect">選曲に使うAIモデル</label>
+        <select id="modelSelect" class="input"></select>
+        <p class="hint">選んだモデルが使えない時は、汎用の最新モデルに自動で切り替わります</p>
+        <p class="hint" id="modelUsed" hidden></p>
+      </div>
       <button type="submit" class="btn primary block" id="btnAi">曲を選んでもらう</button>
     </form>
     <div id="aiResult" aria-live="polite"></div>

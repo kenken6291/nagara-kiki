@@ -814,3 +814,9 @@ body.no-scroll { overflow: hidden; }
   .deck.is-full .queue-info { display: none; }
 }
 .deck.is-full:not(.pseudo-full) { position: relative; }
+
+/* AIモデル選択 */
+.model-picker { margin: 12px 0; }
+.model-picker label { display: block; font-size: .85rem; margin-bottom: 4px; opacity: .85; }
+.model-picker select { width: 100%; }
+.model-picker .hint { margin: 4px 0 0; font-size: .78rem; }

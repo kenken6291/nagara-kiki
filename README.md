@@ -25,7 +25,7 @@ nagara-kiki/
 | `GEMINI_API_KEY` | 必須 | Google AI Studio で発行したキー |
 | `YOUTUBE_API_KEY` | 推奨 | YouTube Data API v3 のキー（下記） |
 | `APP_URL` | 任意 | `https://kenken6291.github.io/nagara-kiki/`（メールに記載） |
-| `GEMINI_MODEL` | 任意 | 既定 `gemini-2.5-flash` |
+| `GEMINI_MODEL` | 任意 | 画面で「自動」の時のモデル。未設定なら汎用の最新（`gemini-flash-latest` → `gemini-4-hydrogen` → `gemini-3.8-flash`）。AI選曲画面でモデルを選べ、使えない時は自動で切替 |
 | `GEMINI_TTS_MODEL` | 任意 | DJ紹介の音声合成。既定 `gemini-2.5-flash-preview-tts` |
 | `GEMINI_TTS_VOICE` | 任意 | DJ紹介の声。既定 `Aoede`（`Kore`・`Puck` など） |
 | `PEPPER` | 自動 | **変更しない**（変えると全員ログイン不可） |

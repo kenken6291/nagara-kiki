@@ -3,7 +3,9 @@
  *
  * スクリプトプロパティ（プロジェクトの設定 → スクリプト プロパティ）
  *   GEMINI_API_KEY   : 必須。Gemini API キー
- *   GEMINI_MODEL     : 任意。既定 gemini-2.5-flash
+ *   GEMINI_MODEL     : 任意。画面で「自動」の時に使うモデル。未設定なら汎用の最新モデル（FALLBACK_GEMINI_MODELS）
+ *                      使うモデルの優先順：画面で選んだモデル → GEMINI_MODEL → FALLBACK_GEMINI_MODELS
+ *                      選んだモデルが使えない（廃止・未公開）時は、FALLBACK_GEMINI_MODELS へ自動で切り替える
  *   GEMINI_TTS_MODEL : 任意。DJ紹介の音声合成モデル。既定 gemini-2.5-flash-preview-tts
  *   GEMINI_TTS_VOICE : 任意。DJ紹介の声。既定 Aoede
  *   YOUTUBE_API_KEY  : 任意。YouTube Data API v3 キー（AI選曲の曲を実際の動画に変換する）
@@ -15,10 +17,20 @@
  * Code.gs を修正したら「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→ デプロイ。
  */
 
-const SERVER_VERSION = '1.10.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
+const SERVER_VERSION = '1.11.0';      // フロントの APP_VERSION と合わせる（画面下に表示）
 const TERMS_VERSION = '2026-11-07';  // 注意事項・免責事項の版（app.js の TERMS_VERSION と同じにする）
 
 const APP_NAME = 'ながら聴き';
+
+// 指定なし・該当なしの時に使う汎用最新モデル（先頭から順に試す）
+//   gemini-flash-latest : Googleが常に最新の汎用モデルへ差し替えるエイリアス
+//   gemini-4-hydrogen   : 2026年11月時点の汎用最新モデル
+//   gemini-3.8-flash    : 最終的な保険
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash'];
+const GEMINI_MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
+const GEMINI_RETRY_CODES = [500, 503];
+let REQ_MODEL_ = '';        // このリクエストで画面から指定されたモデル
+let LAST_USED_MODEL_ = '';  // 直近の Gemini 呼び出しで実際に使ったモデル
 const SESSION_DAYS = 14;
 const TEMP_PASSWORD_HOURS = 24;
 const RESET_CODE_MINUTES = 30;
@@ -161,6 +173,8 @@ function doPost(e) {
   };
 
   const fn = routes[req.action];
+  REQ_MODEL_ = String(req.model || '').trim().toLowerCase();
+  LAST_USED_MODEL_ = '';
   if (!fn) return json_({ ok: false, error: '不明な操作です: ' + req.action, serverVersion: SERVER_VERSION });
 
   const needsLock = WRITE_ACTIONS.indexOf(req.action) !== -1;
@@ -1572,37 +1586,72 @@ function apiGeminiRecommend_(req) {
     djTalk: cleanNarration_(data.djTalk || data.comment || '').slice(0, NARRATION_MAX),
     items: items,
     searchEnabled: !!props_().getProperty('YOUTUBE_API_KEY'),
+    model: LAST_USED_MODEL_,
+    requestedModel: resolveGeminiModel_(REQ_MODEL_),
   };
+}
+
+/** 使うモデルを決める：画面の指定 → スクリプトプロパティ → 汎用の最新 */
+function resolveGeminiModel_(requested) {
+  const req = String(requested || '').trim().toLowerCase();
+  if (req && GEMINI_MODEL_PATTERN.test(req)) return req;
+  const prop = String(props_().getProperty('GEMINI_MODEL') || '').trim().toLowerCase();
+  if (prop && GEMINI_MODEL_PATTERN.test(prop)) return prop;
+  return FALLBACK_GEMINI_MODELS[0];
+}
+
+/** モデルが存在しない・使えない応答かどうか */
+function isModelNotFound_(code, text) {
+  if (code === 404) return true;
+  if (code === 400 || code === 403) {
+    return /not found|is not supported|NOT_FOUND|unknown model|invalid model|not available/i.test(text);
+  }
+  return false;
 }
 
 function geminiJson_(prompt, temperature) {
   const key = props_().getProperty('GEMINI_API_KEY');
   if (!key) fail_('AI選曲の準備ができていません（管理者：GEMINI_API_KEY を設定してください）');
-  const model = props_().getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
-  const res = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'x-goog-api-key': key },
-    muteHttpExceptions: true,
-    payload: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: temperature === undefined ? 0.9 : temperature },
-    }),
+  const first = resolveGeminiModel_(REQ_MODEL_);
+  const candidates = [first].concat(FALLBACK_GEMINI_MODELS.filter(m => m !== first));
+  const payload = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: temperature === undefined ? 0.9 : temperature },
   });
-  const code = res.getResponseCode();
+
+  let res = null, code = 0, text = '', used = first;
+  for (let i = 0; i < candidates.length; i++) {
+    used = candidates[i];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) Utilities.sleep(1500);
+      res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(used) + ':generateContent', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'x-goog-api-key': key },
+        muteHttpExceptions: true,
+        payload: payload,
+      });
+      code = res.getResponseCode();
+      text = res.getContentText();
+      if (GEMINI_RETRY_CODES.indexOf(code) === -1) break;
+    }
+    if (!isModelNotFound_(code, text)) break;
+    console.warn('Geminiモデル「' + used + '」が使えないため次の候補に切り替えます');
+  }
+  LAST_USED_MODEL_ = used;
+
   if (code !== 200) {
-    console.error('Gemini error', code, res.getContentText());
+    console.error('Gemini error', code, used, text);
     if (code === 429) fail_('AIが混み合っています。少し時間をおいてお試しください');
     fail_('AIの呼び出しに失敗しました（' + code + '）');
   }
   try {
-    const body = JSON.parse(res.getContentText());
+    const body = JSON.parse(text);
     const parts = body.candidates[0].content.parts;
-    const text = parts.map(p => p.text || '').join('').replace(/```json|```/g, '').trim();
-    return JSON.parse(text);
+    const out = parts.filter(p => !p.thought).map(p => p.text || '').join('').replace(/```json|```/g, '').trim();
+    return JSON.parse(out);
   } catch (err) {
-    console.error('Gemini parse error', res.getContentText());
+    console.error('Gemini parse error', used, text);
     fail_('AIの応答を読み取れませんでした。もう一度お試しください');
   }
 }

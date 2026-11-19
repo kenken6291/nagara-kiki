@@ -7,6 +7,10 @@ const CONFIG = {
   GAS_URL: String((window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '').trim(),
   APP_VERSION: String((window.APP_CONFIG && window.APP_CONFIG.APP_VERSION) || '').trim(),
   APP_UPDATED: String((window.APP_CONFIG && window.APP_CONFIG.APP_UPDATED) || '').trim(),
+  GEMINI_MODEL: String((window.APP_CONFIG && window.APP_CONFIG.GEMINI_MODEL) || '').trim(),
+  GEMINI_MODEL_OPTIONS: (window.APP_CONFIG && Array.isArray(window.APP_CONFIG.GEMINI_MODEL_OPTIONS) && window.APP_CONFIG.GEMINI_MODEL_OPTIONS.length)
+    ? window.APP_CONFIG.GEMINI_MODEL_OPTIONS
+    : [{ value: '', label: '自動モード（汎用の最新）' }],
   SESSION_KEY: 'nagarakiki_session',
   PREFS_KEY: 'nagarakiki_prefs',
 };
@@ -123,6 +127,7 @@ const state = {
   repairTried: new Set(), // AI差し替えを試した曲（プレイリスト内の曲ID）
   repairFailed: new Set(), // 代わりが見つからなかった曲（一覧で印を付ける）   // 共有リンク（?share=）で開かれたプレイリスト
   serverVersion: '',
+  geminiModel: '',      // 選曲に使うGeminiモデル（'' = 自動）
   voice: { on: false, rec: null, base: '', final: '', interim: '', lastAt: 0, startAt: 0, timer: null },
   narration: { audio: null, url: '', speaking: false, volume: null },
 };
@@ -324,7 +329,7 @@ async function api(action, data = {}) {
 }
 
 async function apiOnce(action, data) {
-  const body = JSON.stringify(Object.assign({ action, token: state.token }, data));
+  const body = JSON.stringify(Object.assign({ action, token: state.token, model: state.geminiModel }, data));
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
   let res;
@@ -1438,6 +1443,7 @@ function bindAi() {
         const r = await api('gemini_recommend', { prompt });
         state.ai = r;
         renderAi();
+        showModelUsed(r);
       } catch (err) {
         $('#aiResult').innerHTML = '';
         throw err;
@@ -3275,13 +3281,54 @@ function bindTabs() {
  * ========================================================= */
 function loadPrefs() {
   const p = storageGet(CONFIG.PREFS_KEY);
+  state.geminiModel = CONFIG.GEMINI_MODEL;
   if (p) {
     state.shuffle = !!p.shuffle;
     if (['off', 'all', 'one'].includes(p.repeat)) state.repeat = p.repeat;
+    if (typeof p.geminiModel === 'string') state.geminiModel = p.geminiModel;
   }
+  // 選択肢から消えたモデルが保存されていたら既定に戻す
+  if (!CONFIG.GEMINI_MODEL_OPTIONS.some(o => o.value === state.geminiModel)) state.geminiModel = CONFIG.GEMINI_MODEL;
 }
 function savePrefs() {
-  storageSet(CONFIG.PREFS_KEY, { shuffle: state.shuffle, repeat: state.repeat });
+  storageSet(CONFIG.PREFS_KEY, { shuffle: state.shuffle, repeat: state.repeat, geminiModel: state.geminiModel });
+}
+
+/* =========================================================
+ * Geminiモデルの選択
+ * ========================================================= */
+function modelLabel(value) {
+  const o = CONFIG.GEMINI_MODEL_OPTIONS.find(x => x.value === value);
+  return o ? o.label : value;
+}
+function setupModelPicker() {
+  const sel = $('#modelSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  CONFIG.GEMINI_MODEL_OPTIONS.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  });
+  sel.value = state.geminiModel;
+  sel.addEventListener('change', () => {
+    state.geminiModel = sel.value;
+    savePrefs();
+    const el = $('#modelUsed');
+    if (el) el.hidden = true;
+    toast(`AIモデルを「${modelLabel(sel.value)}」にしました`);
+  });
+}
+/** 実際に使われたモデルを表示（自動で切り替わった時はそのことも） */
+function showModelUsed(r) {
+  const el = $('#modelUsed');
+  if (!el || !r || !r.model) return;
+  const name = modelLabel(r.model) === r.model ? r.model : modelLabel(r.model);
+  el.textContent = (state.geminiModel && r.requestedModel && r.model !== r.requestedModel)
+    ? `今回使ったモデル：${name}（${modelLabel(state.geminiModel)} が使えなかったため自動で切替）`
+    : `今回使ったモデル：${name}`;
+  el.hidden = false;
 }
 
 /* =========================================================
@@ -3329,6 +3376,7 @@ async function boot() {
   bindDialogs();
   bindTabs();
   loadPrefs();
+  setupModelPicker();
   updateModeButtons();
   loadYouTubeApi();
 
